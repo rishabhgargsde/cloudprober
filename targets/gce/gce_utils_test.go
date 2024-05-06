@@ -17,8 +17,8 @@ package gce
 import (
 	"testing"
 
-	rdspb "github.com/cloudprober/cloudprober/internal/rds/proto"
-	"google.golang.org/protobuf/proto"
+	"github.com/golang/protobuf/proto"
+	rdspb "github.com/rishabhgargsde/cloudprober/rds/proto"
 )
 
 func TestParseLabels(t *testing.T) {

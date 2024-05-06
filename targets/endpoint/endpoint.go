@@ -19,15 +19,12 @@ package endpoint
 import (
 	"fmt"
 	"net"
-	"net/url"
-	"slices"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
 
-	"github.com/cloudprober/cloudprober/common/iputils"
-	endpointpb "github.com/cloudprober/cloudprober/targets/endpoint/proto"
+	"github.com/rishabhgargsde/cloudprober/common/iputils"
 )
 
 // Endpoint represents a targets and associated parameters.
@@ -39,45 +36,14 @@ type Endpoint struct {
 	IP          net.IP
 }
 
-// Clone creates a deep copy of an Endpoint.
-func (ep *Endpoint) Clone() *Endpoint {
-	epCopy := *ep
-	epCopy.Labels = make(map[string]string, len(ep.Labels))
-	for k, v := range ep.Labels {
-		epCopy.Labels[k] = v
-	}
-	return &epCopy
-}
-
-type keyOptions struct {
-	ignoreLabels []string
-}
-
-type KeyOption func(*keyOptions) *keyOptions
-
-// WithIgnoreLabels specifies a list of labels that should not be included in
-// the key computation.
-func WithIgnoreLabels(ignoreLabels ...string) KeyOption {
-	return func(ro *keyOptions) *keyOptions {
-		ro.ignoreLabels = ignoreLabels
-		return ro
-	}
-}
-
 // Key returns a string key that uniquely identifies that endpoint.
 // Endpoint key consists of endpoint name, port and labels.
-func (ep *Endpoint) Key(opts ...KeyOption) string {
-	ro := &keyOptions{}
-	for _, opt := range opts {
-		ro = opt(ro)
-	}
-
-	labelSlice := make([]string, 0, len(ep.Labels))
+func (ep *Endpoint) Key() string {
+	labelSlice := make([]string, len(ep.Labels))
+	i := 0
 	for k, v := range ep.Labels {
-		if ro.ignoreLabels != nil && slices.Contains(ro.ignoreLabels, k) {
-			continue
-		}
-		labelSlice = append(labelSlice, k+":"+v)
+		labelSlice[i] = k + ":" + v
+		i++
 	}
 	sort.Strings(labelSlice)
 
@@ -120,26 +86,9 @@ func (ep *Endpoint) Dst() string {
 	return net.JoinHostPort(ep.Name, strconv.Itoa(ep.Port))
 }
 
-type resolverOptions struct {
-	nameOverride string
-}
-
-type ResolverOption func(*resolverOptions)
-
-func WithNameOverride(nameOverride string) ResolverOption {
-	return func(ro *resolverOptions) {
-		ro.nameOverride = nameOverride
-	}
-}
-
 // Resolve resolves endpoint to an IP address. If endpoint has an embedded IP
 // address it uses that, otherwise a global reolver is used.
-func (ep *Endpoint) Resolve(ipVersion int, resolver Resolver, opts ...ResolverOption) (net.IP, error) {
-	ro := &resolverOptions{}
-	for _, opt := range opts {
-		opt(ro)
-	}
-
+func (ep *Endpoint) Resolve(ipVersion int, resolver Resolver) (net.IP, error) {
 	if ep.IP != nil {
 		if ipVersion == 0 || iputils.IPVersion(ep.IP) == ipVersion {
 			return ep.IP, nil
@@ -148,11 +97,7 @@ func (ep *Endpoint) Resolve(ipVersion int, resolver Resolver, opts ...ResolverOp
 		return nil, fmt.Errorf("no IPv%d address (IP: %s) for %s", ipVersion, ep.IP.String(), ep.Name)
 	}
 
-	name := ep.Name
-	if ro.nameOverride != "" {
-		name = ro.nameOverride
-	}
-	return resolver.Resolve(name, ipVersion)
+	return resolver.Resolve(ep.Name, ipVersion)
 }
 
 // NamesFromEndpoints is convenience function to build a list of names
@@ -163,63 +108,4 @@ func NamesFromEndpoints(endpoints []Endpoint) []string {
 		result[i] = ep.Name
 	}
 	return result
-}
-
-func parseURL(s string) (scheme, host, path string, port int, err error) {
-	u, err := url.Parse(s)
-	if err != nil {
-		return "", "", "", 0, fmt.Errorf("invalid URL: %v", err)
-	}
-
-	scheme = u.Scheme
-	host = u.Hostname()
-	port, _ = strconv.Atoi(u.Port())
-	path = "/"
-
-	hostPath := strings.TrimPrefix(s, scheme+"://")
-	if i := strings.Index(hostPath, "/"); i != -1 {
-		path = hostPath[i:]
-	}
-	return scheme, host, path, port, nil
-}
-
-func FromProtoMessage(endpointspb []*endpointpb.Endpoint) ([]Endpoint, error) {
-	var endpoints []Endpoint
-	seen := make(map[string]bool)
-	timestamp := time.Now()
-
-	for _, pb := range endpointspb {
-		ep := Endpoint{
-			Name:        pb.GetName(),
-			Labels:      pb.GetLabels(),
-			IP:          net.ParseIP(pb.GetIp()),
-			Port:        int(pb.GetPort()),
-			LastUpdated: timestamp,
-		}
-
-		if pb.GetUrl() != "" {
-			scheme, host, path, port, err := parseURL(pb.GetUrl())
-			if err != nil {
-				return nil, err
-			}
-			if ep.Labels == nil {
-				ep.Labels = make(map[string]string)
-			}
-			ep.Labels["__cp_scheme__"] = scheme
-			ep.Labels["__cp_host__"] = host
-			ep.Labels["__cp_path__"] = path
-
-			if ep.Port == 0 {
-				ep.Port = port
-			}
-		}
-		epKey := ep.Key()
-		if seen[epKey] {
-			return nil, fmt.Errorf("duplicate endpoint: %s", ep.Key())
-		}
-		seen[epKey] = true
-		endpoints = append(endpoints, ep)
-	}
-
-	return endpoints, nil
 }

@@ -28,13 +28,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/golang/protobuf/proto"
 	"github.com/kylelemons/godebug/pretty"
-	"google.golang.org/protobuf/proto"
 
-	"github.com/cloudprober/cloudprober/metrics"
-	"github.com/cloudprober/cloudprober/surfacers/internal/common/compress"
-	"github.com/cloudprober/cloudprober/surfacers/internal/common/options"
-	configpb "github.com/cloudprober/cloudprober/surfacers/internal/file/proto"
+	"github.com/rishabhgargsde/cloudprober/metrics"
+	"github.com/rishabhgargsde/cloudprober/surfacers/internal/common/compress"
+	"github.com/rishabhgargsde/cloudprober/surfacers/internal/common/options"
+	configpb "github.com/rishabhgargsde/cloudprober/surfacers/internal/file/proto"
 )
 
 func TestWrite(t *testing.T) {
@@ -90,7 +90,7 @@ func testWrite(t *testing.T, compressionEnabled bool) {
 		s.Write(context.Background(), tt.em)
 		s.close()
 
-		dat, err := os.ReadFile(f.Name())
+		dat, err := ioutil.ReadFile(f.Name())
 		if err != nil {
 			t.Errorf("Unable to open test output file for reading: %v\ntest description: %s", err, tt.description)
 		}

@@ -23,7 +23,7 @@ import (
 	"sync"
 	"time"
 
-	rdsserver "github.com/cloudprober/cloudprober/internal/rds/server"
+	rdsserver "github.com/rishabhgargsde/cloudprober/rds/server"
 	"google.golang.org/grpc"
 )
 
@@ -36,7 +36,6 @@ type runConfig struct {
 	buildTimestamp time.Time
 	rdsServer      *rdsserver.Server
 	httpServeMux   *http.ServeMux
-	configFilePath string
 }
 
 var rc runConfig
@@ -115,16 +114,4 @@ func DefaultHTTPServeMux() *http.ServeMux {
 	rc.RLock()
 	defer rc.RUnlock()
 	return rc.httpServeMux
-}
-
-func SetConfigFilePath(configFilePath string) {
-	rc.Lock()
-	defer rc.Unlock()
-	rc.configFilePath = configFilePath
-}
-
-func ConfigFilePath() string {
-	rc.RLock()
-	defer rc.RUnlock()
-	return rc.configFilePath
 }

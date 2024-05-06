@@ -17,28 +17,22 @@ package sched
 import (
 	"context"
 	"fmt"
-	"strings"
 	"testing"
 	"time"
 
-	"github.com/cloudprober/cloudprober/logger"
-	"github.com/cloudprober/cloudprober/metrics"
-	"github.com/cloudprober/cloudprober/metrics/testutils"
-	dnsconfigpb "github.com/cloudprober/cloudprober/probes/dns/proto"
-	httpconfigpb "github.com/cloudprober/cloudprober/probes/http/proto"
-	"github.com/cloudprober/cloudprober/probes/options"
-	tcpconfigpb "github.com/cloudprober/cloudprober/probes/tcp/proto"
-	"github.com/cloudprober/cloudprober/targets"
-	"github.com/cloudprober/cloudprober/targets/endpoint"
-	"github.com/stretchr/testify/assert"
-	"google.golang.org/protobuf/proto"
+	"github.com/rishabhgargsde/cloudprober/logger"
+	"github.com/rishabhgargsde/cloudprober/metrics"
+	"github.com/rishabhgargsde/cloudprober/metrics/testutils"
+	"github.com/rishabhgargsde/cloudprober/probes/options"
+	"github.com/rishabhgargsde/cloudprober/targets"
+	"github.com/rishabhgargsde/cloudprober/targets/endpoint"
 )
 
 type testProbeResult struct {
 	total int
 }
 
-func (tpr *testProbeResult) Metrics(ts time.Time, _ int64, opts *options.Options) *metrics.EventMetrics {
+func (tpr *testProbeResult) Metrics(ts time.Time, opts *options.Options) *metrics.EventMetrics {
 	return metrics.NewEventMetrics(ts).AddMetric("total", metrics.NewInt(int64(tpr.total)))
 }
 
@@ -80,13 +74,14 @@ func TestUpdateTargetsAndStartProbes(t *testing.T) {
 		Targets:             targets.StaticTargets(fmt.Sprintf("%s,%s", testTargets[0], testTargets[1])),
 		Interval:            10 * time.Millisecond,
 		StatsExportInterval: 20 * time.Millisecond,
+		LogMetrics:          func(_ *metrics.EventMetrics) {},
 		Logger:              &logger.Logger{},
 	}
 
 	s := &Scheduler{
 		Opts:              opts,
 		DataChan:          make(chan *metrics.EventMetrics, 100),
-		NewResult:         func(_ *endpoint.Endpoint) ProbeResult { return &testProbeResult{} },
+		NewResult:         func() ProbeResult { return &testProbeResult{} },
 		RunProbeForTarget: func(ctx context.Context, ep endpoint.Endpoint, r ProbeResult) { r.(*testProbeResult).total++ },
 	}
 	s.init()
@@ -113,102 +108,4 @@ func TestUpdateTargetsAndStartProbes(t *testing.T) {
 
 	cancelF()
 	s.Wait()
-}
-
-func TestRunProbeForTargetTimeout(t *testing.T) {
-	testTargets := [2]string{"test1.com", "test2.com"}
-
-	opts := &options.Options{
-		Targets:  targets.StaticTargets(strings.Join(testTargets[:], ",")),
-		Interval: 10 * time.Millisecond,
-		Timeout:  5 * time.Millisecond,
-	}
-
-	s := &Scheduler{
-		Opts:      opts,
-		DataChan:  make(chan *metrics.EventMetrics, 100),
-		NewResult: func(_ *endpoint.Endpoint) ProbeResult { return &testProbeResult{} },
-		RunProbeForTarget: func(ctx context.Context, ep endpoint.Endpoint, r ProbeResult) {
-			select {
-			case <-ctx.Done():
-				if ctx.Err() != context.DeadlineExceeded {
-					if ctx.Err() == context.Canceled {
-						t.Log("Probe canceled by the test")
-						return
-					}
-					t.Errorf("Probe did not timeout as expected")
-				}
-			case <-time.After(50 * time.Millisecond):
-				t.Errorf("Probe did not timeout as expected")
-			}
-		},
-	}
-	s.init()
-
-	ctx, cancelF := context.WithCancel(context.Background())
-
-	s.refreshTargets(ctx)
-	// Run the probe for a short duration to trigger the timeout.
-	time.Sleep(100 * time.Millisecond)
-
-	assert.Equal(t, len(testTargets), len(s.cancelFuncs), "len(s.cancelFunc)=%d, want=%d", len(s.cancelFuncs), len(testTargets))
-
-	cancelF()
-	s.Wait()
-}
-
-func TestSchedulerGapBetweenTargets(t *testing.T) {
-	testTargets := []endpoint.Endpoint{{Name: "test1.com"}, {Name: "test2.com"}}
-	tests := []struct {
-		name string
-		opts *options.Options
-		want time.Duration
-	}{
-		{
-			name: "default",
-			opts: &options.Options{
-				Interval: 10 * time.Second,
-			},
-			want: 500 * time.Millisecond,
-		},
-		{
-			name: "tcp probe",
-			opts: &options.Options{
-				Interval: 10 * time.Second,
-				ProbeConf: &tcpconfigpb.ProbeConf{
-					IntervalBetweenTargetsMsec: proto.Int32(1000),
-				},
-			},
-			want: 1 * time.Second,
-		},
-		{
-			name: "http probe",
-			opts: &options.Options{
-				Interval: 10 * time.Second,
-				ProbeConf: &httpconfigpb.ProbeConf{
-					IntervalBetweenTargetsMsec: proto.Int32(2000),
-				},
-			},
-			want: 2 * time.Second,
-		},
-		{
-			name: "dns probe doesn't have interval between targets",
-			opts: &options.Options{
-				Interval:  10 * time.Second,
-				ProbeConf: &dnsconfigpb.ProbeConf{},
-			},
-			want: 500 * time.Millisecond,
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			s := &Scheduler{
-				Opts:    tt.opts,
-				targets: testTargets,
-			}
-			if got := s.gapBetweenTargets(); got != tt.want {
-				t.Errorf("Scheduler.gapBetweenTargets() = %v, want %v", got, tt.want)
-			}
-		})
-	}
 }

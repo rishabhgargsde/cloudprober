@@ -19,8 +19,8 @@ package transform
 import (
 	"fmt"
 
-	"github.com/cloudprober/cloudprober/logger"
-	"github.com/cloudprober/cloudprober/metrics"
+	"github.com/rishabhgargsde/cloudprober/logger"
+	"github.com/rishabhgargsde/cloudprober/metrics"
 )
 
 // AddFailureMetric adds failure metric to the EventMetrics based on the
@@ -57,7 +57,6 @@ func CumulativeToGauge(em *metrics.EventMetrics, lvCache map[string]*metrics.Eve
 
 	// If it is the first time for this EventMetrics, return it as it is.
 	if !ok {
-		em.Kind = metrics.GAUGE
 		return em, nil
 	}
 
@@ -66,6 +65,5 @@ func CumulativeToGauge(em *metrics.EventMetrics, lvCache map[string]*metrics.Eve
 		return nil, fmt.Errorf("error subtracting cached metrics from current metrics: %v", err)
 	}
 
-	gaugeEM.Kind = metrics.GAUGE
 	return gaugeEM, nil
 }

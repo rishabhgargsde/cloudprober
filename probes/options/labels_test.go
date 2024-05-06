@@ -18,8 +18,8 @@ import (
 	"reflect"
 	"testing"
 
-	configpb "github.com/cloudprober/cloudprober/probes/proto"
-	"github.com/cloudprober/cloudprober/targets/endpoint"
+	configpb "github.com/rishabhgargsde/cloudprober/probes/proto"
+	"github.com/rishabhgargsde/cloudprober/targets/endpoint"
 	"google.golang.org/protobuf/proto"
 )
 

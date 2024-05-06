@@ -23,15 +23,15 @@ import (
 	"sync"
 	"time"
 
-	"cloud.google.com/go/compute/metadata"
-	"cloud.google.com/go/pubsub"
-	"github.com/cloudprober/cloudprober/internal/sysvars"
-	"github.com/cloudprober/cloudprober/logger"
-	"github.com/cloudprober/cloudprober/metrics"
-	"github.com/cloudprober/cloudprober/surfacers/internal/common/compress"
-	"github.com/cloudprober/cloudprober/surfacers/internal/common/options"
+	"github.com/rishabhgargsde/cloudprober/logger"
+	"github.com/rishabhgargsde/cloudprober/metrics"
+	"github.com/rishabhgargsde/cloudprober/surfacers/internal/common/compress"
+	"github.com/rishabhgargsde/cloudprober/surfacers/internal/common/options"
+	"github.com/rishabhgargsde/cloudprober/sysvars"
+	"google3/third_party/golang/cloud_google_com/go/compute/v/v0/metadata/metadata"
+	"google3/third_party/golang/cloud_google_com/go/pubsub/v/v1/pubsub"
 
-	configpb "github.com/cloudprober/cloudprober/surfacers/internal/pubsub/proto"
+	configpb "github.com/rishabhgargsde/cloudprober/surfacers/internal/pubsub/proto"
 )
 
 const (
@@ -106,12 +106,10 @@ func (s *Surfacer) processInput(ctx context.Context) {
 			if !ok {
 				return
 			}
-			emStr := em.String(metrics.StringerIgnoreMetric(s.opts.IgnoreMetric))
-
 			if s.c.GetCompressionEnabled() {
-				s.compressionBuffer.WriteLineToBuffer(emStr)
+				s.compressionBuffer.WriteLineToBuffer(em.String())
 			} else {
-				s.publishMessage(ctx, []byte(emStr))
+				s.publishMessage(ctx, []byte(em.String()))
 			}
 		}
 	}
@@ -124,19 +122,15 @@ func (s *Surfacer) init(ctx context.Context) error {
 	s.starttime = strconv.FormatInt(time.Now().UnixNano()/(1000*1000), 10)
 
 	if s.topicName == "" {
-		s.topicName = "cloudprober-" + sysvars.GetVar("hostname")
+		s.topicName = "cloudprober-" + sysvars.Vars()["hostname"]
 	}
 
-	if s.gcpProject == "" {
-		if metadata.OnGCE() {
-			project, err := metadata.ProjectID()
-			if err != nil {
-				return fmt.Errorf("pubsub_surfacer: unable to retrieve project id: %v", err)
-			}
-			s.gcpProject = project
-		} else {
-			return fmt.Errorf("pubsub_surfacer: project id not provided and not running on GCE")
+	if s.gcpProject == "" && metadata.OnGCE() {
+		project, err := metadata.ProjectID()
+		if err != nil {
+			return fmt.Errorf("pubsub_surfacer: unable to retrieve project id: %v", err)
 		}
+		s.gcpProject = project
 	}
 
 	client, err := newPubsubClient(ctx, s.gcpProject)

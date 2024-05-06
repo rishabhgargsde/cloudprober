@@ -58,19 +58,19 @@ import (
 	"net"
 	"sync"
 
-	"cloud.google.com/go/compute/metadata"
-	"github.com/cloudprober/cloudprober/logger"
-	"github.com/cloudprober/cloudprober/targets/endpoint"
-	configpb "github.com/cloudprober/cloudprober/targets/gce/proto"
-	dnsRes "github.com/cloudprober/cloudprober/targets/resolver"
-	"google.golang.org/protobuf/proto"
+	"github.com/golang/protobuf/proto"
+	"github.com/rishabhgargsde/cloudprober/logger"
+	"github.com/rishabhgargsde/cloudprober/targets/endpoint"
+	configpb "github.com/rishabhgargsde/cloudprober/targets/gce/proto"
+	dnsRes "github.com/rishabhgargsde/cloudprober/targets/resolver"
+	"google3/third_party/golang/cloud_google_com/go/compute/v/v0/metadata/metadata"
 
-	"github.com/cloudprober/cloudprober/internal/rds/client"
-	clientconfigpb "github.com/cloudprober/cloudprober/internal/rds/client/proto"
-	"github.com/cloudprober/cloudprober/internal/rds/gcp"
-	rdspb "github.com/cloudprober/cloudprober/internal/rds/proto"
-	"github.com/cloudprober/cloudprober/internal/rds/server"
-	serverconfigpb "github.com/cloudprober/cloudprober/internal/rds/server/proto"
+	"github.com/rishabhgargsde/cloudprober/rds/client"
+	clientconfigpb "github.com/rishabhgargsde/cloudprober/rds/client/proto"
+	"github.com/rishabhgargsde/cloudprober/rds/gcp"
+	rdspb "github.com/rishabhgargsde/cloudprober/rds/proto"
+	"github.com/rishabhgargsde/cloudprober/rds/server"
+	serverconfigpb "github.com/rishabhgargsde/cloudprober/rds/server/proto"
 )
 
 var global struct {
@@ -102,7 +102,7 @@ type gceResources struct {
 	clients      map[string]*client.Client
 
 	// DNS config
-	r      dnsRes.Resolver
+	r      *dnsRes.Resolver
 	useDNS bool
 }
 
@@ -198,7 +198,7 @@ func (gr *gceResources) Resolve(name string, ipVer int) (net.IP, error) {
 }
 
 // New is a helper function to unpack a Targets proto into a Targets interface.
-func New(conf *configpb.TargetsConf, globalOpts *configpb.GlobalOptions, res dnsRes.Resolver, l *logger.Logger) (Targets, error) {
+func New(conf *configpb.TargetsConf, globalOpts *configpb.GlobalOptions, res *dnsRes.Resolver, l *logger.Logger) (Targets, error) {
 	projects := conf.GetProject()
 	if projects == nil {
 		if !metadata.OnGCE() {

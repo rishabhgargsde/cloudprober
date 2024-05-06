@@ -21,10 +21,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cloudprober/cloudprober/metrics"
-	"github.com/cloudprober/cloudprober/surfacers/internal/common/options"
-	configpb "github.com/cloudprober/cloudprober/surfacers/internal/probestatus/proto"
-	"github.com/stretchr/testify/assert"
+	"google3/third_party/golang/testify/assert/assert"
+
+	"github.com/rishabhgargsde/cloudprober/metrics"
+	"github.com/rishabhgargsde/cloudprober/surfacers/internal/common/options"
+	configpb "github.com/rishabhgargsde/cloudprober/surfacers/internal/probestatus/proto"
 	"google.golang.org/protobuf/proto"
 )
 

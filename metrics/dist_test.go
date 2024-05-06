@@ -20,8 +20,9 @@ import (
 	"strings"
 	"testing"
 
-	distpb "github.com/cloudprober/cloudprober/metrics/proto"
-	"github.com/stretchr/testify/assert"
+	"google3/third_party/golang/testify/assert/assert"
+
+	distpb "github.com/rishabhgargsde/cloudprober/metrics/proto"
 	"google.golang.org/protobuf/encoding/prototext"
 )
 

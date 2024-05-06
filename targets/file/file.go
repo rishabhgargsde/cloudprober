@@ -20,19 +20,19 @@ package file
 import (
 	"context"
 
-	"github.com/cloudprober/cloudprober/internal/rds/client"
-	client_configpb "github.com/cloudprober/cloudprober/internal/rds/client/proto"
-	"github.com/cloudprober/cloudprober/internal/rds/file"
-	file_configpb "github.com/cloudprober/cloudprober/internal/rds/file/proto"
-	rdspb "github.com/cloudprober/cloudprober/internal/rds/proto"
-	"github.com/cloudprober/cloudprober/logger"
-	configpb "github.com/cloudprober/cloudprober/targets/file/proto"
-	dnsRes "github.com/cloudprober/cloudprober/targets/resolver"
+	"github.com/rishabhgargsde/cloudprober/logger"
+	"github.com/rishabhgargsde/cloudprober/rds/client"
+	client_configpb "github.com/rishabhgargsde/cloudprober/rds/client/proto"
+	"github.com/rishabhgargsde/cloudprober/rds/file"
+	file_configpb "github.com/rishabhgargsde/cloudprober/rds/file/proto"
+	rdspb "github.com/rishabhgargsde/cloudprober/rds/proto"
+	configpb "github.com/rishabhgargsde/cloudprober/targets/file/proto"
+	dnsRes "github.com/rishabhgargsde/cloudprober/targets/resolver"
 	"google.golang.org/protobuf/proto"
 )
 
 // New returns new file targets.
-func New(opts *configpb.TargetsConf, res dnsRes.Resolver, l *logger.Logger) (*client.Client, error) {
+func New(opts *configpb.TargetsConf, res *dnsRes.Resolver, l *logger.Logger) (*client.Client, error) {
 	lister, err := file.New(&file_configpb.ProviderConfig{
 		FilePath:  []string{opts.GetFilePath()},
 		ReEvalSec: proto.Int32(opts.GetReEvalSec()),

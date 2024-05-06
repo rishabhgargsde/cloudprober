@@ -21,16 +21,15 @@ package main
 
 import (
 	"context"
-	"log"
-	"os"
+	"io/ioutil"
 
 	"flag"
-
-	pb "github.com/cloudprober/cloudprober/prober/proto"
-	spb "github.com/cloudprober/cloudprober/prober/proto"
-	configpb "github.com/cloudprober/cloudprober/probes/proto"
+	"github.com/golang/glog"
+	"github.com/golang/protobuf/proto"
+	pb "github.com/rishabhgargsde/cloudprober/prober/proto"
+	spb "github.com/rishabhgargsde/cloudprober/prober/proto"
+	configpb "github.com/rishabhgargsde/cloudprober/probes/proto"
 	"google.golang.org/grpc"
-	"google.golang.org/protobuf/encoding/prototext"
 )
 
 var (
@@ -44,38 +43,38 @@ func main() {
 
 	conn, err := grpc.Dial(*server, grpc.WithInsecure())
 	if err != nil {
-		log.Fatal(err)
+		glog.Fatal(err)
 	}
 
 	client := spb.NewCloudproberClient(conn)
 
 	if *addProbe != "" && *rmProbe != "" {
-		log.Fatal("Options --add_probe and --rm_probe cannot be specified at the same time")
+		glog.Fatal("Options --add_probe and --rm_probe cannot be specified at the same time")
 	}
 
 	if *rmProbe != "" {
 		_, err := client.RemoveProbe(context.Background(), &pb.RemoveProbeRequest{ProbeName: rmProbe})
 		if err != nil {
-			log.Fatal(err)
+			glog.Exit(err)
 		}
 	}
 
 	if *addProbe != "" {
-		b, err := os.ReadFile(*addProbe)
+		b, err := ioutil.ReadFile(*addProbe)
 		if err != nil {
-			log.Fatalf("Failed to read the config file: %v", err)
+			glog.Exitf("Failed to read the config file: %v", err)
 		}
 
-		log.Printf("Read probe config: %s", string(b))
+		glog.Infof("Read probe config: %s", string(b))
 
 		cfg := &configpb.ProbeDef{}
-		if err := prototext.Unmarshal(b, cfg); err != nil {
-			log.Fatal(err)
+		if err := proto.UnmarshalText(string(b), cfg); err != nil {
+			glog.Exit(err)
 		}
 
 		_, err = client.AddProbe(context.Background(), &pb.AddProbeRequest{ProbeConfig: cfg})
 		if err != nil {
-			log.Fatal(err)
+			glog.Exit(err)
 		}
 	}
 }

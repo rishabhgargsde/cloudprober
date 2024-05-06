@@ -21,15 +21,15 @@ import (
 	"strings"
 	"sync"
 
-	rdsclient "github.com/cloudprober/cloudprober/internal/rds/client"
-	rdsclientpb "github.com/cloudprober/cloudprober/internal/rds/client/proto"
-	"github.com/cloudprober/cloudprober/internal/rds/kubernetes"
-	k8sconfigpb "github.com/cloudprober/cloudprober/internal/rds/kubernetes/proto"
-	rdspb "github.com/cloudprober/cloudprober/internal/rds/proto"
-	"github.com/cloudprober/cloudprober/internal/rds/server"
-	serverconfigpb "github.com/cloudprober/cloudprober/internal/rds/server/proto"
-	"github.com/cloudprober/cloudprober/logger"
-	targetspb "github.com/cloudprober/cloudprober/targets/proto"
+	"github.com/rishabhgargsde/cloudprober/logger"
+	rdsclient "github.com/rishabhgargsde/cloudprober/rds/client"
+	rdsclientpb "github.com/rishabhgargsde/cloudprober/rds/client/proto"
+	"github.com/rishabhgargsde/cloudprober/rds/kubernetes"
+	k8sconfigpb "github.com/rishabhgargsde/cloudprober/rds/kubernetes/proto"
+	rdspb "github.com/rishabhgargsde/cloudprober/rds/proto"
+	"github.com/rishabhgargsde/cloudprober/rds/server"
+	serverconfigpb "github.com/rishabhgargsde/cloudprober/rds/server/proto"
+	targetspb "github.com/rishabhgargsde/cloudprober/targets/proto"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -103,6 +103,12 @@ func rdsRequest(resources, nameF, portFilter string) *rdspb.ListResourcesRequest
 		ResourcePath: &resources,
 	}
 	if nameF != "" {
+		if nameF[0] != '^' {
+			nameF = "^" + nameF
+		}
+		if nameF[len(nameF)-1] != '$' {
+			nameF = nameF + "$"
+		}
 		req.Filter = append(req.Filter, &rdspb.Filter{
 			Key:   proto.String("name"),
 			Value: proto.String(nameF),

@@ -18,8 +18,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cloudprober/cloudprober/metrics"
-	"github.com/stretchr/testify/assert"
+	"google3/third_party/golang/testify/assert/assert"
+
+	"github.com/rishabhgargsde/cloudprober/metrics"
 )
 
 func TestMetricsFromChannel(t *testing.T) {
@@ -42,7 +43,7 @@ func TestMetricsFromChannel(t *testing.T) {
 
 	for i := range ems {
 		if ems[i].Timestamp != ts[i] {
-			t.Errorf("First EventMetrics has unexpected timestamp. Got=%s, Expected=%s", ems[i].String(), ts[i].String())
+			t.Errorf("First EventMetrics has unexpected timestamp. Got=%s, Expected=%s", ems[i], ts[i])
 		}
 	}
 
@@ -57,7 +58,7 @@ func TestMetricsFromChannel(t *testing.T) {
 
 	for i := range ems {
 		if ems[i].Timestamp != ts[i] {
-			t.Errorf("First EventMetrics has unexpected timestamp. Got=%s, Expected=%s", ems[i].String(), ts[i].String())
+			t.Errorf("First EventMetrics has unexpected timestamp. Got=%s, Expected=%s", ems[i], ts[i])
 		}
 	}
 }

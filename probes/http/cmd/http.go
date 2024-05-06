@@ -20,18 +20,17 @@ package main
 import (
 	"context"
 	"fmt"
-	"log"
-	"os"
+	"io/ioutil"
 	"time"
 
 	"flag"
-
-	"github.com/cloudprober/cloudprober/metrics"
-	"github.com/cloudprober/cloudprober/probes/http"
-	configpb "github.com/cloudprober/cloudprober/probes/http/proto"
-	"github.com/cloudprober/cloudprober/probes/options"
-	"github.com/cloudprober/cloudprober/targets"
-	"google.golang.org/protobuf/encoding/prototext"
+	"github.com/golang/glog"
+	"github.com/golang/protobuf/proto"
+	"github.com/rishabhgargsde/cloudprober/metrics"
+	"github.com/rishabhgargsde/cloudprober/probes/http"
+	configpb "github.com/rishabhgargsde/cloudprober/probes/http/proto"
+	"github.com/rishabhgargsde/cloudprober/probes/options"
+	"github.com/rishabhgargsde/cloudprober/targets"
 )
 
 var (
@@ -48,12 +47,12 @@ func main() {
 
 	// If we are given a config file, read it. If not, use defaults.
 	if *config != "" {
-		b, err := os.ReadFile(*config)
+		b, err := ioutil.ReadFile(*config)
 		if err != nil {
-			log.Fatal(err)
+			glog.Exit(err)
 		}
-		if err = prototext.Unmarshal(b, c); err != nil {
-			log.Fatalf("Error while parsing config protobuf %s: Err: %v", string(b), err)
+		if err = proto.UnmarshalText(string(b), c); err != nil {
+			glog.Exitf("Error while parsing config protobuf %s: Err: %v", string(b), err)
 		}
 	}
 
@@ -66,7 +65,7 @@ func main() {
 
 	hp := &http.Probe{}
 	if err := hp.Init("http_test", opts); err != nil {
-		log.Fatalf("Error in initializing probe %s from the config. Err: %v", "http_test", err)
+		glog.Exitf("Error in initializing probe %s from the config. Err: %v", "http_test", err)
 	}
 	dataChan := make(chan *metrics.EventMetrics, 1000)
 	go hp.Start(context.Background(), dataChan)

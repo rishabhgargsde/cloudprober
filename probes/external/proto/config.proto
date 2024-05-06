@@ -2,7 +2,7 @@ syntax = "proto2";
 
 package cloudprober.probes.external;
 
-import "github.com/cloudprober/cloudprober/metrics/payload/proto/config.proto";
+import "github.com/rishabhgargsde/cloudprober/metrics/payload/proto/config.proto";
 
 option go_package = "github.com/cloudprober/cloudprober/probes/external/proto";
 
@@ -18,13 +18,9 @@ message ProbeConf {
 
   // Command.  For ONCE probes, arguments are processed for the following field
   // substitutions:
-  // @probe@                    Name of the probe
-  // @target.name@ or @target@  Hostname of the target
-  // @target.port@ or @port@    Port of the target
-  // @target.ip@                IP address associated with target
-  // @address@                  Resolved IP address of the target, in case of
-  //                            discovered targets, same as @target.ip@.
-  // @target.label.<x>@         Label x of the target
+  // @probe@    Name of the probe
+  // @target@   Hostname of the target
+  // @address@  IP address of the target
   //
   // For example, for target ig-us-central1-a, /tools/recreate_vm -vm @target@
   // will get converted to: /tools/recreate_vm -vm ig-us-central1-a
@@ -36,7 +32,7 @@ message ProbeConf {
 
   // Options for the SERVER mode probe requests. These options are passed on to
   // the external probe server as part of the ProbeRequest. Values are
-  // substituted similar to command arguments for the ONCE mode probes above.
+  // substituted similar to command arguments for the ONCE mode probes.
   message Option {
     optional string name = 1;
     optional string value = 2;
@@ -55,6 +51,6 @@ message ProbeConf {
   // default, external probe will export output metrics as they are available
   // on the stdout. If this option is set to true, output metrics will be
   // exported only after the probe has completed.
-  // New in version 0.13.4. This was true by default in previous versions. 
+  // New in version 0.13.4. This was true by default in previous versions.
   optional bool disable_streaming_output_metrics = 7 [default = false];
 }

@@ -18,7 +18,7 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/cloudprober/cloudprober/targets/endpoint"
+	"github.com/rishabhgargsde/cloudprober/targets/endpoint"
 )
 
 func TestStaticTargets(t *testing.T) {

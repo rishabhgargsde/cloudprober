@@ -20,12 +20,12 @@ import (
 	"fmt"
 	"strings"
 
-	rdspb "github.com/cloudprober/cloudprober/internal/rds/proto"
-	configpb "github.com/cloudprober/cloudprober/targets/gce/proto"
-	dnsRes "github.com/cloudprober/cloudprober/targets/resolver"
+	"github.com/golang/protobuf/proto"
+	rdspb "github.com/rishabhgargsde/cloudprober/rds/proto"
+	configpb "github.com/rishabhgargsde/cloudprober/targets/gce/proto"
+	dnsRes "github.com/rishabhgargsde/cloudprober/targets/resolver"
 	"golang.org/x/oauth2/google"
 	compute "google.golang.org/api/compute/v1"
-	"google.golang.org/protobuf/proto"
 )
 
 // defaultComputeService returns the compute service to use for the GCE API
@@ -76,7 +76,7 @@ func instancesIPConfig(ipb *configpb.Instances) *rdspb.IPConfig {
 	}
 }
 
-func verifyInstancesConfig(ipb *configpb.Instances, globalResolver dnsRes.Resolver) error {
+func verifyInstancesConfig(ipb *configpb.Instances, globalResolver *dnsRes.Resolver) error {
 	if ipb.GetUseDnsToResolve() {
 		if ipb.GetNetworkInterface() != nil {
 			return errors.New("network_intf and use_dns_to_resolve are mutually exclusive")

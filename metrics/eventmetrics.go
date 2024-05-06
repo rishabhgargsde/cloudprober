@@ -15,6 +15,7 @@
 package metrics
 
 import (
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -158,6 +159,35 @@ func (em *EventMetrics) Clone() *EventMetrics {
 	return newEM
 }
 
+// Update updates the receiver EventMetrics with the incoming one.
+func (em *EventMetrics) Update(in *EventMetrics) error {
+	if em.Kind != in.Kind {
+		return fmt.Errorf("EventMetrics of different kind cannot be merged. Receiver's kind: %d, incoming: %d", em.Kind, in.Kind)
+	}
+	switch em.Kind {
+	case GAUGE:
+		for name, newVal := range in.metrics {
+			_, ok := em.metrics[name]
+			if !ok {
+				return fmt.Errorf("receiver EventMetrics doesn't have %s metric", name)
+			}
+			em.metrics[name] = newVal.Clone()
+		}
+		return nil
+	case CUMULATIVE:
+		for name, newVal := range in.metrics {
+			val, ok := em.metrics[name]
+			if !ok {
+				return fmt.Errorf("receiver EventMetrics doesn't have %s metric", name)
+			}
+			val.Add(newVal)
+		}
+		return nil
+	default:
+		return errors.New("Unknown metrics kind")
+	}
+}
+
 // SubtractLast subtracts the provided (last) EventMetrics from the receiver
 // EventMetrics and return the result as a GAUGE EventMetrics.
 func (em *EventMetrics) SubtractLast(lastEM *EventMetrics) (*EventMetrics, error) {
@@ -190,48 +220,20 @@ func (em *EventMetrics) SubtractLast(lastEM *EventMetrics) (*EventMetrics, error
 	return gaugeEM, nil
 }
 
-type stringerOptions struct {
-	ignoreMetricFn func(string) bool
-	noTimestamp    bool
-}
-
-type StringerOption func(opts *stringerOptions)
-
-func StringerIgnoreMetric(fn func(metricName string) bool) StringerOption {
-	return func(o *stringerOptions) {
-		o.ignoreMetricFn = fn
-	}
-}
-
-func StringerNoTimestamp() StringerOption {
-	return func(o *stringerOptions) {
-		o.noTimestamp = true
-	}
-}
-
 // String returns the string representation of the EventMetrics.
 // Note that this is compatible with what vmwatcher understands.
 // Example output string:
 // 1519084040 labels=ptype=http sent=62 rcvd=52 resp-code=map:code,200:44,204:8
-func (em *EventMetrics) String(opts ...StringerOption) string {
-	sopts := &stringerOptions{}
-	for _, o := range opts {
-		o(sopts)
-	}
-
+func (em *EventMetrics) String() string {
 	em.mu.RLock()
 	defer em.mu.RUnlock()
 
 	var b strings.Builder
 	b.Grow(128)
 
-	if !sopts.noTimestamp {
-		b.WriteString(strconv.FormatInt(em.Timestamp.Unix(), 10))
-		b.WriteString(" ")
-	}
-
+	b.WriteString(strconv.FormatInt(em.Timestamp.Unix(), 10))
 	// Labels section: labels=ptype=http,probe=homepage
-	b.WriteString("labels=")
+	b.WriteString(" labels=")
 	for i, key := range em.labelsKeys {
 		if i != 0 {
 			b.WriteByte(',')
@@ -242,9 +244,6 @@ func (em *EventMetrics) String(opts ...StringerOption) string {
 	}
 	// Values section: " sent=62 rcvd=52 resp-code=map:code,200:44,204:8"
 	for _, name := range em.metricsKeys {
-		if sopts.ignoreMetricFn != nil && sopts.ignoreMetricFn(name) {
-			continue
-		}
 		b.WriteByte(' ')
 		b.WriteString(name)
 		b.WriteByte('=')
@@ -264,12 +263,4 @@ func (em *EventMetrics) Key() string {
 		keys = append(keys, k+"="+em.labels[k])
 	}
 	return strings.Join(keys, ",")
-}
-
-// LatencyUnitToString returns the string representation of the latency unit.
-func LatencyUnitToString(latencyUnit time.Duration) string {
-	if latencyUnit == 0 || latencyUnit == time.Microsecond {
-		return "us"
-	}
-	return latencyUnit.String()[1:]
 }

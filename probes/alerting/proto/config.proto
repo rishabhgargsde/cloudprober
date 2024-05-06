@@ -1,0 +1,131 @@
+syntax = "proto3";
+
+package cloudprober.probes.alerting;
+
+option go_package = "github.com/cloudprober/cloudprober/probes/alerting/proto";
+
+message Email {
+    // Email addresses to send the alert to.
+    repeated string to = 1;
+
+    // From address in the alert email.
+    // If not set, defaults to the value of smtp_user if smtp_user is set,
+    // otherwise defaults to cloudprober-alert@<hostname>.
+    string from = 2;
+
+    // Default: Environment variable SMTP_SERVER 
+    string smtp_server = 3;
+
+    // Default: Environment variable SMTP_USERNAME
+    string smtp_username = 4;
+
+    // Default: Environment variable SMTP_PASSWORD
+    string smtp_password = 5;
+}
+
+message PagerDuty {
+    // PagerDuty Routing Key.
+    // The routing key is used to determine which service the alerts are sent to
+    // and is generated with the service. The routing key is found under the 
+    // service, when the events v2 integration is enabled, under integrations,
+    // in the pagerduty console.
+    // Note: set either routing_key or routing_key_env_var. routing_key
+    // takes precedence over routing_key_env_var.
+    string routing_key = 1;
+
+    // The environment variable that is used to contain the pagerduty routing 
+    // key.
+    string routing_key_env_var = 2; // Default: PAGERDUTY_ROUTING_KEY;
+
+    // PagerDuty API URL.
+    // Used to overwrite the default PagerDuty API URL.
+    string api_url = 3; // Default: https://event.pagerduty.com
+
+}
+
+message Slack {
+    // Webhook URL
+    // The Slack notifications use a webhook URL to send the notifications to
+    // a Slack channel. The webhook URL can be found in the Slack console under
+    // the "Incoming Webhooks" section.
+    // https://api.slack.com/messaging/webhooks
+    // Note: set either webhook_url or webhook_url_env_var. webhook_url
+    // takes precedence over webhook_url_env_var.
+    string webhook_url = 1;
+
+    // The environment variable that is used to contain the slack webhook URL.
+    string webhook_url_env_var = 2; // Default: SLACK_WEBHOOK_URL;
+}
+
+message NotifyConfig {
+    // Command to run when alert is fired. In the command line following fields
+    // are substituted:
+    //  @alert@: Alert name
+    //  @probe@: Probe name
+    //  @target@: Target name, or target and port if port is specified.
+    //  @target.label.<label>@: Label <label> value, e.g. target.label.role.
+    //  @failures@: Count of failures.
+    //  @total@: Out of.
+    //  @since@: Time since the alert condition started.
+    //  @json@: JSON representation of the alert fields.
+    //
+    // For example, if you want to send an email when an alert is fired, you can
+    // use the following command:
+    // command: "/usr/bin/mail -s 'Alert @alert@ fired for @target@' manu@a.b"
+    string command = 10;
+
+    // Email notification configuration.
+    Email email = 11;
+
+    // PagerDuty configuration.
+    PagerDuty pager_duty = 12;
+
+    // Slack configuration.
+    Slack slack = 13;
+}
+
+message Condition {
+    int32 failures = 1;
+    int32 total = 2;
+}
+
+message AlertConf {
+    // Name of the alert. Default is to use the probe name. If you have multiple
+    // alerts for the same probe, you must specify a name for each alert.
+    string name = 1;
+
+    // Condition for the alert. Default is to alert on any failure.
+    // Example:
+    // # Alert if 6 out of 10 probes fail.
+    // condition {
+    //   failures: 6
+    //   total: 10
+    // }
+    optional Condition condition = 2;
+
+    // How to notify in case of alert.
+    NotifyConfig notify = 3;
+
+    // Dashboard URL template.
+    // Default: http://localhost:9313/status?probe=@probe@
+    string dashboard_url_template = 4;  // Default: ""
+    
+    string playbook_url_template = 5;  // Default: ""
+
+    // Default: "Cloudprober alert @alert@ for @target@"
+    string summary_template = 6;
+
+    // Default:
+    // Cloudprober alert "@alert@" for "@target@":
+    // Failures: @failures@ out of @total@ probes
+    // Failing since: @since@
+    // Probe: @probe@
+    // Dashboard: @dashboard_url@
+    // Playbook: @playbook_url@
+    // Condition ID: @condition_id@
+    string details_template = 7;  // Default: ""
+
+    // How often to repeat notification for the same alert. Default is 1hr.
+    // To disable any kind of notification throttling, set this to 0.
+    optional int32 repeat_interval_sec = 8;  // Default: 1hr
+}

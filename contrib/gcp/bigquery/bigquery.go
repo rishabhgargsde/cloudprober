@@ -22,7 +22,7 @@ import (
 	"context"
 	"fmt"
 
-	"cloud.google.com/go/bigquery"
+	"google3/third_party/golang/cloud_google_com/go/bigquery/v/v1/bigquery"
 )
 
 // The QueryRunner interface encapsulates the BigQuery API.

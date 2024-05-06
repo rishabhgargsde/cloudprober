@@ -22,9 +22,9 @@ import (
 	"strings"
 	"testing"
 
-	rdspb "github.com/cloudprober/cloudprober/internal/rds/proto"
-	"github.com/cloudprober/cloudprober/targets/endpoint"
-	"google.golang.org/protobuf/proto"
+	"github.com/golang/protobuf/proto"
+	rdspb "github.com/rishabhgargsde/cloudprober/rds/proto"
+	"github.com/rishabhgargsde/cloudprober/targets/endpoint"
 )
 
 type mockLDLister struct {

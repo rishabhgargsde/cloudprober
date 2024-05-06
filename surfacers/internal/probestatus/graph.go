@@ -20,8 +20,8 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/cloudprober/cloudprober/internal/sysvars"
-	"github.com/cloudprober/cloudprober/logger"
+	"github.com/rishabhgargsde/cloudprober/logger"
+	"github.com/rishabhgargsde/cloudprober/sysvars"
 )
 
 type graphOptions struct {
@@ -242,6 +242,6 @@ func computeGraphData(metrics map[string]*timeseries, gopts *graphOptions) *grap
 
 	gd.syncGraphLines(startTimes, endTimes)
 
-	//ps.l.Debugf("graphData[%s]: %s", probeName, string(gd.JSONBytes()))
+	// ps.l.Debugf("graphData[%s]: %s", probeName, string(gd.JSONBytes()))
 	return gd
 }

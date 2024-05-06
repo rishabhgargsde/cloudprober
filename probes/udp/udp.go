@@ -30,15 +30,15 @@ import (
 	"sync"
 	"time"
 
-	udpsrv "github.com/cloudprober/cloudprober/internal/servers/udp"
-	"github.com/cloudprober/cloudprober/internal/sysvars"
-	"github.com/cloudprober/cloudprober/internal/udpmessage"
-	"github.com/cloudprober/cloudprober/logger"
-	"github.com/cloudprober/cloudprober/metrics"
-	"github.com/cloudprober/cloudprober/probes/options"
-	"github.com/cloudprober/cloudprober/probes/probeutils"
-	configpb "github.com/cloudprober/cloudprober/probes/udp/proto"
-	"github.com/cloudprober/cloudprober/targets/endpoint"
+	"github.com/rishabhgargsde/cloudprober/common/message"
+	"github.com/rishabhgargsde/cloudprober/logger"
+	"github.com/rishabhgargsde/cloudprober/metrics"
+	"github.com/rishabhgargsde/cloudprober/probes/options"
+	"github.com/rishabhgargsde/cloudprober/probes/probeutils"
+	configpb "github.com/rishabhgargsde/cloudprober/probes/udp/proto"
+	udpsrv "github.com/rishabhgargsde/cloudprober/servers/udp"
+	"github.com/rishabhgargsde/cloudprober/sysvars"
+	"github.com/rishabhgargsde/cloudprober/targets/endpoint"
 )
 
 const (
@@ -69,9 +69,9 @@ type Probe struct {
 	runID       uint64
 	ipVer       int
 
-	targets []endpoint.Endpoint      // List of targets for a probe iteration.
-	res     map[flow]*probeResult    // Results by flow.
-	fsm     *udpmessage.FlowStateMap // Map flow parameters to flow state.
+	targets []endpoint.Endpoint   // List of targets for a probe iteration.
+	res     map[flow]*probeResult // Results by flow.
+	fsm     *message.FlowStateMap // Map flow parameters to flow state.
 	payload []byte
 
 	// Intermediate buffers of sent and received packets
@@ -137,9 +137,9 @@ func (p *Probe) Init(name string, opts *options.Options) error {
 	if p.l = opts.Logger; p.l == nil {
 		p.l = &logger.Logger{}
 	}
-	p.src = sysvars.GetVar("hostname")
+	p.src = sysvars.Vars()["hostname"]
 	p.c = c
-	p.fsm = udpmessage.NewFlowStateMap()
+	p.fsm = message.NewFlowStateMap()
 	p.res = make(map[flow]*probeResult)
 
 	if p.c.GetPayloadSize() != 0 {
@@ -346,7 +346,7 @@ func (p *Probe) recvLoop(ctx context.Context, conn *net.UDPConn) {
 		}
 
 		rxTS := time.Now()
-		msg, err := udpmessage.NewMessage(b[:msgLen])
+		msg, err := message.NewMessage(b[:msgLen])
 		if err != nil {
 			p.l.Errorf("Incoming message error from %s: %v", raddr, err)
 			continue
@@ -390,7 +390,7 @@ func (p *Probe) runSingleProbe(f flow, conn *net.UDPConn, maxLen int, raddr *net
 // capture the responses before "timeout" and the main loop will flush the
 // results.
 func (p *Probe) runProbe() {
-	if !p.opts.IsScheduled() || len(p.targets) == 0 {
+	if len(p.targets) == 0 {
 		return
 	}
 	maxLen := int(p.c.GetMaxLength())
@@ -405,7 +405,6 @@ func (p *Probe) runProbe() {
 	}
 
 	var wg sync.WaitGroup
-	wg.Add(len(p.targets) * packetsPerTarget)
 
 	for _, conn := range p.connList {
 		conn.SetWriteDeadline(time.Now().Add(p.opts.Interval / 2))
@@ -429,6 +428,7 @@ func (p *Probe) runProbe() {
 		for i := 0; i < packetsPerTarget; i++ {
 			connID := (initialConn + i) % len(p.connList)
 			conn := p.connList[connID]
+			wg.Add(1)
 			go func(conn *net.UDPConn, f flow) {
 				defer wg.Done()
 				if err := p.runSingleProbe(f, conn, maxLen, &net.UDPAddr{IP: ip, Port: dstPort}); err != nil {

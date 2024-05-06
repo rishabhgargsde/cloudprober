@@ -22,13 +22,13 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/cloudprober/cloudprober/internal/validators"
-	"github.com/cloudprober/cloudprober/logger"
-	"github.com/cloudprober/cloudprober/metrics"
-	"github.com/cloudprober/cloudprober/probes/common/sched"
-	"github.com/cloudprober/cloudprober/probes/options"
-	configpb "github.com/cloudprober/cloudprober/probes/tcp/proto"
-	"github.com/cloudprober/cloudprober/targets/endpoint"
+	"github.com/rishabhgargsde/cloudprober/logger"
+	"github.com/rishabhgargsde/cloudprober/metrics"
+	"github.com/rishabhgargsde/cloudprober/probes/common/sched"
+	"github.com/rishabhgargsde/cloudprober/probes/options"
+	configpb "github.com/rishabhgargsde/cloudprober/probes/tcp/proto"
+	"github.com/rishabhgargsde/cloudprober/targets/endpoint"
+	"github.com/rishabhgargsde/cloudprober/validators"
 )
 
 // Probe holds aggregate information about all probe runs, per-target.
@@ -65,7 +65,7 @@ func (p *Probe) newResult() sched.ProbeResult {
 	return result
 }
 
-func (result *probeResult) Metrics(ts time.Time, _ int64, opts *options.Options) *metrics.EventMetrics {
+func (result *probeResult) Metrics(ts time.Time, opts *options.Options) *metrics.EventMetrics {
 	em := metrics.NewEventMetrics(ts).
 		AddMetric("total", metrics.NewInt(result.total)).
 		AddMetric("success", metrics.NewInt(result.success)).
@@ -121,10 +121,11 @@ func (p *Probe) Init(name string, opts *options.Options) error {
 }
 
 func (p *Probe) runProbe(ctx context.Context, target endpoint.Endpoint, res sched.ProbeResult) {
+	ctx, cancelCtx := context.WithTimeout(ctx, p.opts.Timeout)
+	defer cancelCtx()
+
 	// Convert interface to struct type
 	result := res.(*probeResult)
-
-	result.total++
 
 	host := target.Name
 	ipLabel := ""
@@ -162,6 +163,8 @@ func (p *Probe) runProbe(ctx context.Context, target endpoint.Endpoint, res sche
 		defer conn.Close()
 	}
 
+	result.total++
+
 	if p.opts.NegativeTest {
 		if err == nil {
 			p.l.Warning("Negative test, but connection was successful to: ", addr)
@@ -182,11 +185,12 @@ func (p *Probe) runProbe(ctx context.Context, target endpoint.Endpoint, res sche
 // Start starts and runs the probe indefinitely.
 func (p *Probe) Start(ctx context.Context, dataChan chan *metrics.EventMetrics) {
 	s := &sched.Scheduler{
-		ProbeName:         p.name,
-		DataChan:          dataChan,
-		Opts:              p.opts,
-		NewResult:         func(_ *endpoint.Endpoint) sched.ProbeResult { return p.newResult() },
-		RunProbeForTarget: p.runProbe,
+		ProbeName:              p.name,
+		DataChan:               dataChan,
+		Opts:                   p.opts,
+		NewResult:              p.newResult,
+		RunProbeForTarget:      p.runProbe,
+		IntervalBetweenTargets: time.Duration(p.c.GetIntervalBetweenTargetsMsec()) * time.Millisecond,
 	}
 	s.UpdateTargetsAndStartProbes(ctx)
 }

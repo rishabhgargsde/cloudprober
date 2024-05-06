@@ -1,4 +1,4 @@
-// Copyright 2017-2024 The Cloudprober Authors.
+// Copyright 2017 The Cloudprober Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -15,7 +15,6 @@
 package resolver
 
 import (
-	"context"
 	"fmt"
 	"net"
 	"runtime"
@@ -23,58 +22,19 @@ import (
 	"sync"
 	"testing"
 	"time"
-
-	targetspb "github.com/cloudprober/cloudprober/targets/proto"
-	"github.com/miekg/dns"
-	"github.com/stretchr/testify/assert"
-	"google.golang.org/protobuf/proto"
 )
 
-// ipVersion tells if an IP address is IPv4 or IPv6.
-func testIPVersion(ip net.IP) int {
-	if len(ip.To4()) == net.IPv4len {
-		return 4
-	}
-	if len(ip) == net.IPv6len {
-		return 6
-	}
-	return 0
-}
-
 type resolveBackendWithTracking struct {
-	nameToIP map[cacheRecordKey][]net.IP
+	nameToIP map[string][]net.IP
 	called   int
-	callLog  []string
 	mu       sync.Mutex
 }
 
-func (b *resolveBackendWithTracking) setNameToIP(name string, ips ...net.IP) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	if b.nameToIP == nil {
-		b.nameToIP = make(map[cacheRecordKey][]net.IP)
-	}
-	// Reset cache for this name
-	for _, network := range []ipVersion{IP, IP4, IP6} {
-		b.nameToIP[cacheRecordKey{name, network}] = nil
-	}
-	for _, ip := range ips {
-		network := ipVersion(testIPVersion(ip))
-		b.nameToIP[cacheRecordKey{name, network}] = append(b.nameToIP[cacheRecordKey{name, network}], ip)
-		b.nameToIP[cacheRecordKey{name, IP}] = append(b.nameToIP[cacheRecordKey{name, IP}], ip)
-	}
-}
-
-func (b *resolveBackendWithTracking) resolve(_ context.Context, network, name string) ([]net.IP, error) {
+func (b *resolveBackendWithTracking) resolve(name string) ([]net.IP, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.called++
-	b.callLog = append(b.callLog, fmt.Sprintf("resolve(%s, %s)", network, name))
-	if b.nameToIP == nil {
-		b.nameToIP = make(map[cacheRecordKey][]net.IP)
-	}
-	networkT := map[string]ipVersion{"": IP, "ip": IP, "ip4": IP4, "ip6": IP6}[network]
-	return b.nameToIP[cacheRecordKey{name, ipVersion(networkT)}], nil
+	return b.nameToIP[name], nil
 }
 
 func (b *resolveBackendWithTracking) calls() int {
@@ -83,26 +43,21 @@ func (b *resolveBackendWithTracking) calls() int {
 	return b.called
 }
 
-func (b *resolveBackendWithTracking) callsLog() []string {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return append([]string{}, b.callLog...)
-}
-
-func verify(testCase string, t *testing.T, ip, expectedIP net.IP, b *resolveBackendWithTracking, expectedBackendCalls int, err error) {
-	t.Helper()
+func verify(testCase string, t *testing.T, ip, expectedIP net.IP, backendCalls, expectedBackendCalls int, err error) {
 	if err != nil {
 		t.Errorf("%s: Error while resolving. Err: %v", testCase, err)
 	}
 	if !ip.Equal(expectedIP) {
 		t.Errorf("%s: Got wrong IP address. Got: %s, Expected: %s", testCase, ip, expectedIP)
 	}
-	assert.Equal(t, expectedBackendCalls, b.calls(), "backend calls mismatch. Calllog: \n%v", b.callsLog())
+	if backendCalls != expectedBackendCalls {
+		t.Errorf("%s: Backend calls: %d, Expected: %d", testCase, backendCalls, expectedBackendCalls)
+	}
 }
 
 // waitForChannelOrFail reads the result from the channel and fails if it
 // wasn't received within the timeout.
-func waitForRefreshOrFail(t *testing.T, c <-chan bool, timeout time.Duration) bool {
+func waitForChannelOrFail(t *testing.T, c <-chan bool, timeout time.Duration) bool {
 	select {
 	case b := <-c:
 		return b
@@ -112,161 +67,165 @@ func waitForRefreshOrFail(t *testing.T, c <-chan bool, timeout time.Duration) bo
 	}
 }
 
-// waitForRefreshAndVerify reads the result from the channel and fails if it
-// wasn't received within the timeout.
-func waitForRefreshAndVerify(t *testing.T, c <-chan bool, timeout time.Duration, expectRefresh bool) {
-	assert.Equal(t, expectRefresh, waitForRefreshOrFail(t, c, timeout), "refreshed")
-}
-
 func TestResolveWithMaxAge(t *testing.T) {
-	b := &resolveBackendWithTracking{}
-	r := New(WithResolveFunc(b.resolve))
+	b := &resolveBackendWithTracking{
+		nameToIP: make(map[string][]net.IP),
+	}
+	r := &Resolver{
+		cache:   make(map[string]*cacheRecord),
+		resolve: b.resolve,
+	}
 
 	testHost := "hostA"
 	expectedIP := net.ParseIP("1.2.3.4")
-	b.setNameToIP(testHost, expectedIP)
+	b.nameToIP[testHost] = []net.IP{expectedIP}
 
 	// Resolve a host, there is no cache, a backend call should be made
 	expectedBackendCalls := 1
 	refreshed := make(chan bool, 2)
 	ip, err := r.resolveWithMaxAge(testHost, 4, 60*time.Second, refreshed)
-	verify("first-run-no-cache", t, ip, expectedIP, b, expectedBackendCalls, err)
+	verify("first-run-no-cache", t, ip, expectedIP, b.calls(), expectedBackendCalls, err)
 	// First Resolve calls refresh twice. Once for init (which succeeds), and
 	// then again for refreshing, which is not needed. Hence the results are true
 	// and then false.
-	waitForRefreshAndVerify(t, refreshed, time.Second, true)
-	waitForRefreshAndVerify(t, refreshed, time.Second, false)
+	if !waitForChannelOrFail(t, refreshed, time.Second) {
+		t.Errorf("refreshed returned false, want true")
+	}
+	if waitForChannelOrFail(t, refreshed, time.Second) {
+		t.Errorf("refreshed returned true, want false")
+	}
 
 	// Resolve same host again, it should come from cache, no backend call
 	newExpectedIP := net.ParseIP("1.2.3.6")
-	b.setNameToIP(testHost, newExpectedIP)
+	b.nameToIP[testHost] = []net.IP{newExpectedIP}
 	ip, err = r.resolveWithMaxAge(testHost, 4, 60*time.Second, refreshed)
-	verify("second-run-from-cache", t, ip, expectedIP, b, expectedBackendCalls, err)
-	waitForRefreshAndVerify(t, refreshed, time.Second, false)
+	verify("second-run-from-cache", t, ip, expectedIP, b.calls(), expectedBackendCalls, err)
+	if waitForChannelOrFail(t, refreshed, time.Second) {
+		t.Errorf("refreshed returned true, want false")
+	}
 
 	// Resolve same host again with maxAge=0, it will issue an asynchronous (hence no increment
 	// in expectedBackenddCalls) backend call
 	ip, err = r.resolveWithMaxAge(testHost, 4, 0*time.Second, refreshed)
-	verify("third-run-expire-cache", t, ip, expectedIP, b, expectedBackendCalls, err)
-	waitForRefreshAndVerify(t, refreshed, time.Second, true)
-
+	verify("third-run-expire-cache", t, ip, expectedIP, b.calls(), expectedBackendCalls, err)
+	if !waitForChannelOrFail(t, refreshed, time.Second) {
+		t.Errorf("refreshed returned false, want true")
+	}
 	// Now that refresh has happened, we should see a new IP.
 	expectedIP = newExpectedIP
 	expectedBackendCalls++
 	ip, err = r.resolveWithMaxAge(testHost, 4, 60*time.Second, refreshed)
-	verify("fourth-run-new-result", t, ip, expectedIP, b, expectedBackendCalls, err)
-	waitForRefreshAndVerify(t, refreshed, time.Second, false)
+	verify("fourth-run-new-result", t, ip, expectedIP, b.calls(), expectedBackendCalls, err)
+	if waitForChannelOrFail(t, refreshed, time.Second) {
+		t.Errorf("refreshed returned true, want false")
+	}
 }
 
-// TestResolveErr tests the behavior of the resolver when backend returns an
-// error. This test uses the refreshed channel and waits on it to make the
-// resolver behavior deterministic.
 func TestResolveErr(t *testing.T) {
 	cnt := 0
-	r := New(WithResolveFunc(func(_ context.Context, network, name string) ([]net.IP, error) {
-		cnt++
-		if cnt == 2 || cnt == 3 {
-			return nil, fmt.Errorf("time to return error, cnt: %d", cnt)
-		}
-		return []net.IP{net.ParseIP("0.0.0.0")}, nil
-	}))
-	refreshedCh := make(chan bool, 2)
+	r := &Resolver{
+		cache: make(map[string]*cacheRecord),
+		resolve: func(name string) ([]net.IP, error) {
+			cnt++
+			if cnt == 2 {
+				return nil, fmt.Errorf("time to return error, cnt: %d", cnt)
+			}
+			return []net.IP{net.ParseIP("0.0.0.0")}, nil
+		},
+	}
+	refreshed := make(chan bool, 2)
 	// cnt=0; returning 0.0.0.0.
-	ip, err := r.resolveWithMaxAge("testHost", 4, 60*time.Second, refreshedCh)
+	_, err := r.resolveWithMaxAge("testHost", 4, 60*time.Second, refreshed)
 	if err != nil {
-		t.Errorf("Got unexpected error: %v", err)
+		t.Logf("Err: %v\n", err)
+		t.Errorf("Expected no error, got error")
 	}
-	assert.Equal(t, net.ParseIP("0.0.0.0"), ip)
 	// First Resolve calls refresh twice. Once for init (which succeeds), and
-	// then again for refreshing, which is not needed. Hence the results are
-	// true and then false.
-	waitForRefreshAndVerify(t, refreshedCh, time.Second, true)
-	waitForRefreshAndVerify(t, refreshedCh, time.Second, false)
-
-	// cnt=1, returning 0.0.0.0, but will trigger another refresh due to maxAge
-	time.Sleep(10 * time.Millisecond)
-	ip, err = r.resolveWithMaxAge("testHost", 4, 10*time.Millisecond, refreshedCh)
-	if err != nil {
-		t.Errorf("Got unexpected error: %v", err)
+	// then again for refreshing, which is not needed. Hence the results are true
+	// and then false.
+	if !waitForChannelOrFail(t, refreshed, time.Second) {
+		t.Errorf("refreshed returned false, want true")
 	}
-	// refresh triggers because of maxAge < time since last update.
-	waitForRefreshAndVerify(t, refreshedCh, time.Second, true)
-	assert.Equal(t, net.ParseIP("0.0.0.0"), ip)
-
-	// cnt=2, last backend refresh failed and cache record contains an error,
-	// but maxTTL is 60 seconds, so we'll not get an error.
-	// refresh will still be triggered on this call because of error.
-	r.maxCacheAge = 60 * time.Second
-	ip, err = r.resolveWithMaxAge("testHost", 4, 60*time.Second, refreshedCh)
-	if err != nil {
-		t.Errorf("Unexpected error: %v, while maxTTL is 60s", err)
+	if waitForChannelOrFail(t, refreshed, time.Second) {
+		t.Errorf("refreshed returned true, want false")
 	}
-	waitForRefreshAndVerify(t, refreshedCh, time.Second, true)
-	assert.Equal(t, net.ParseIP("0.0.0.0"), ip)
-
-	// cnt=3, last backend refresh failed again, CR still has error. This time
-	// we get error because we reduce maxTTL to 10 milliseconds.
-	// refresh will still be triggered on this call because of error.
-	r.maxCacheAge = 10 * time.Millisecond
-	ip, err = r.resolveWithMaxAge("testHost", 4, 60*time.Second, refreshedCh)
+	// cnt=1, returning 0.0.0.0, but updating the cache record asynchronously to contain the
+	// error returned for cnt=2.
+	_, err = r.resolveWithMaxAge("testHost", 4, 0*time.Second, refreshed)
+	if err != nil {
+		t.Logf("Err: %v\n", err)
+		t.Errorf("Expected no error, got error")
+	}
+	if !waitForChannelOrFail(t, refreshed, time.Second) {
+		t.Errorf("refreshed returned false, want true")
+	}
+	// cache record contains an error, and we should therefore expect an error.
+	// This call for resolve will have cnt=2, and the asynchronous call to update the cache will
+	// therefore update it to contain 0.0.0.0, which should be returned by the next call.
+	_, err = r.resolveWithMaxAge("testHost", 4, 0*time.Second, refreshed)
 	if err == nil {
-		t.Error("Expected error for maxTTL=10ms, but got none")
+		t.Errorf("Expected error, got no error")
 	}
-	waitForRefreshAndVerify(t, refreshedCh, time.Second, true)
-	assert.Equal(t, net.ParseIP("0.0.0.0"), ip)
-
-	// No errors after the last refresh.
-	// No refresh triggered this time because of maxAge.
-	ip, err = r.resolveWithMaxAge("testHost", 4, 10*time.Second, refreshedCh)
+	if !waitForChannelOrFail(t, refreshed, time.Second) {
+		t.Errorf("refreshed returned false, want true")
+	}
+	// cache record now contains 0.0.0.0 again.
+	_, err = r.resolveWithMaxAge("testHost", 4, 0*time.Second, refreshed)
 	if err != nil {
-		t.Errorf("Got unexpected error: %v", err)
+		t.Logf("Err: %v\n", err)
+		t.Errorf("Expected no error, got error")
 	}
-	waitForRefreshAndVerify(t, refreshedCh, time.Second, false)
-	assert.Equal(t, net.ParseIP("0.0.0.0"), ip)
+	if !waitForChannelOrFail(t, refreshed, time.Second) {
+		t.Errorf("refreshed returned false, want true")
+	}
 }
 
 func TestResolveIPv6(t *testing.T) {
-	b := &resolveBackendWithTracking{}
-	r := New(WithResolveFunc(b.resolve))
+	b := &resolveBackendWithTracking{
+		nameToIP: make(map[string][]net.IP),
+	}
+	r := &Resolver{
+		cache:   make(map[string]*cacheRecord),
+		resolve: b.resolve,
+	}
 
 	testHost := "hostA"
 	expectedIPv4 := net.ParseIP("1.2.3.4")
 	expectedIPv6 := net.ParseIP("::1")
-	b.setNameToIP(testHost, expectedIPv4, expectedIPv6)
+	b.nameToIP[testHost] = []net.IP{expectedIPv4, expectedIPv6}
 
 	ip, err := r.Resolve(testHost, 4)
 	expectedBackendCalls := 1
-	verify("ipv4-address-not-as-expected", t, ip, expectedIPv4, b, expectedBackendCalls, err)
+	verify("ipv4-address-not-as-expected", t, ip, expectedIPv4, b.calls(), expectedBackendCalls, err)
 
-	// IPv6 address will cause a new backend call.
+	// This will come from cache this time, so no new backend calls.
 	ip, err = r.Resolve(testHost, 6)
-	expectedBackendCalls++
-	verify("ipv6-address-not-as-expected", t, ip, expectedIPv6, b, expectedBackendCalls, err)
+	verify("ipv6-address-not-as-expected", t, ip, expectedIPv6, b.calls(), expectedBackendCalls, err)
 
 	// No IP version specified, should return IPv4 as IPv4 gets preference.
-	// This will create a new cache record, so a new backend call.
+	// This will come from cache this time, so no new backend calls.
 	ip, err = r.Resolve(testHost, 0)
-	expectedBackendCalls++
-	verify("ipv0-address-not-as-expected", t, ip, expectedIPv4, b, expectedBackendCalls, err)
+	verify("ipv0-address-not-as-expected", t, ip, expectedIPv4, b.calls(), expectedBackendCalls, err)
 
 	// New host, with no IPv4 address
 	testHost = "hostB"
 	expectedIPv6 = net.ParseIP("::2")
-	b.setNameToIP(testHost, expectedIPv6)
+	b.nameToIP[testHost] = []net.IP{expectedIPv6}
 
 	ip, err = r.Resolve(testHost, 4)
 	expectedBackendCalls++
 	if err == nil {
-		t.Errorf("resolved IPv4 address for an IPv6 only host: %s", ip.String())
+		t.Errorf("resolved IPv4 address for an IPv6 only host")
 	}
 
+	// This will come from cache this time, so no new backend calls.
 	ip, err = r.Resolve(testHost, 6)
-	expectedBackendCalls++
-	verify("ipv6-address-not-as-expected", t, ip, expectedIPv6, b, expectedBackendCalls, err)
+	verify("ipv6-address-not-as-expected", t, ip, expectedIPv6, b.calls(), expectedBackendCalls, err)
 
+	// No IP version specified, should return IPv6 as there is no IPv4 address for this host.
+	// This will come from cache this time, so no new backend calls.
 	ip, err = r.Resolve(testHost, 0)
-	expectedBackendCalls++
-	verify("ipv0-address-not-as-expected", t, ip, expectedIPv6, b, expectedBackendCalls, err)
+	verify("ipv0-address-not-as-expected", t, ip, expectedIPv6, b.calls(), expectedBackendCalls, err)
 }
 
 // TestConcurrentInit tests that multiple Resolves in parallel on the same
@@ -274,21 +233,23 @@ func TestResolveIPv6(t *testing.T) {
 func TestConcurrentInit(t *testing.T) {
 	cnt := 0
 	resolveWait := make(chan bool)
-	r := New(WithResolveFunc(func(_ context.Context, network, name string) ([]net.IP, error) {
-		cnt++
-		// The first call should be blocked on resolveWait.
-		if cnt == 1 {
-			<-resolveWait
-			return []net.IP{net.ParseIP("0.0.0.0")}, nil
-		}
-		// The 2nd call should never happen.
-		return nil, fmt.Errorf("resolve should be called just once, cnt: %d", cnt)
-	}))
-
+	r := &Resolver{
+		cache: make(map[string]*cacheRecord),
+		resolve: func(name string) ([]net.IP, error) {
+			cnt++
+			// The first call should be blocked on resolveWait.
+			if cnt == 1 {
+				<-resolveWait
+				return []net.IP{net.ParseIP("0.0.0.0")}, nil
+			}
+			// The 2nd call should never happen.
+			return nil, fmt.Errorf("resolve should be called just once, cnt: %d", cnt)
+		},
+	}
 	// 5 because first resolve calls refresh twice.
-	refreshed := make(chan bool, 101)
+	refreshed := make(chan bool, 5)
 	var wg sync.WaitGroup
-	for i := 0; i < 100; i++ {
+	for i := 0; i < 4; i++ {
 		wg.Add(1)
 		go func() {
 			_, err := r.resolveWithMaxAge("testHost", 4, 60*time.Second, refreshed)
@@ -307,8 +268,8 @@ func TestConcurrentInit(t *testing.T) {
 	resolveWait <- true
 	resolvedCount := 0
 	// 5 because first resolve calls refresh twice.
-	for i := 0; i < 101; i++ {
-		if waitForRefreshOrFail(t, refreshed, time.Second) {
+	for i := 0; i < 5; i++ {
+		if waitForChannelOrFail(t, refreshed, time.Second) {
 			resolvedCount++
 		}
 	}
@@ -333,7 +294,7 @@ type resolveBackendBenchmark struct {
 	t       time.Time
 }
 
-func (rb *resolveBackendBenchmark) resolve(_ context.Context, network, name string) ([]net.IP, error) {
+func (rb *resolveBackendBenchmark) resolve(name string) ([]net.IP, error) {
 	rb.callCnt++
 	fmt.Printf("Time since initiation: %s\n", time.Since(rb.t))
 	if rb.delay != 0 {
@@ -347,7 +308,10 @@ func BenchmarkResolve(b *testing.B) {
 		delay: 10 * time.Millisecond,
 		t:     time.Now(),
 	}
-	r := New(WithResolveFunc(rb.resolve))
+	r := &Resolver{
+		cache:   make(map[string]*cacheRecord),
+		resolve: rb.resolve,
+	}
 	// RunParallel executes its body in parallel, in multiple goroutines. Parallelism is controlled by
 	// the test -cpu (test.cpu) flag (default is GOMAXPROCS). So if benchmarks runs N times, that N
 	// is spread over these goroutines.
@@ -367,440 +331,4 @@ func BenchmarkResolve(b *testing.B) {
 		}
 	})
 	fmt.Printf("Called backend resolve %d times\n", rb.callCnt)
-}
-
-func TestParseOverrideAddress(t *testing.T) {
-	tests := []struct {
-		dnsResolverOverride string
-		wantNetwork         string
-		wantAddr            string
-		wantErr             bool
-	}{
-		{
-			dnsResolverOverride: "1.1.1.1",
-			wantNetwork:         "",
-			wantAddr:            "1.1.1.1:53",
-		},
-		{
-			dnsResolverOverride: "tcp://1.1.1.1",
-			wantNetwork:         "tcp",
-			wantAddr:            "1.1.1.1:53",
-		},
-		{
-			dnsResolverOverride: "tcp://1.1.1.1:413",
-			wantNetwork:         "tcp",
-			wantAddr:            "1.1.1.1:413",
-		},
-		{
-			dnsResolverOverride: "udp://1.1.1.1",
-			wantNetwork:         "udp",
-			wantAddr:            "1.1.1.1:53",
-		},
-		{
-			dnsResolverOverride: "udp65://1.1.1.1",
-			wantErr:             true,
-		},
-		{
-			dnsResolverOverride: "udp://1.1.1.1:4a",
-			wantErr:             true,
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.dnsResolverOverride, func(t *testing.T) {
-			network, addr, err := ParseOverrideAddress(tt.dnsResolverOverride)
-			if (err != nil) != tt.wantErr {
-				t.Errorf("parseOverrideAddress() error = %v, wantErr %v", err, tt.wantErr)
-			}
-			if err != nil {
-				return
-			}
-			assert.Equal(t, tt.wantNetwork, network, "network")
-			assert.Equal(t, tt.wantAddr, addr, "addr")
-		})
-	}
-}
-
-func createFakeDNSServer(t *testing.T, dataA, dataAAAA map[string]string, useTCP bool, pause time.Duration, callCount *int, callCountMu *sync.Mutex) *dns.Server {
-	t.Helper()
-
-	dnsServer := &dns.Server{}
-	if useTCP {
-		ln, err := net.Listen("tcp", "localhost:")
-		if err != nil {
-			t.Fatalf("Error creating tcp listener: %v", err)
-		}
-		dnsServer.Listener = ln
-	} else {
-		packetConn, err := net.ListenPacket("udp", "localhost:")
-		if err != nil {
-			t.Fatalf("Error creating packet conn: %v", err)
-		}
-		dnsServer.PacketConn = packetConn
-	}
-
-	dnsServer.Handler = dns.HandlerFunc(func(w dns.ResponseWriter, r *dns.Msg) {
-		start := time.Now()
-		t.Logf("FakeDNSServer: (request id=%d) Received request", r.Id)
-
-		callCountMu.Lock()
-		(*callCount)++
-		callCountMu.Unlock()
-
-		m := new(dns.Msg)
-		m.SetReply(r)
-
-		var answers []dns.RR
-		for _, q := range r.Question {
-			switch q.Qtype {
-			case dns.TypeA:
-				if ip := dataA[q.Name]; ip != "" {
-					answers = append(answers, &dns.A{
-						Hdr: dns.RR_Header{Name: q.Name, Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: 60},
-						A:   net.ParseIP(ip),
-					})
-				}
-			case dns.TypeAAAA:
-				if ip := dataAAAA[q.Name]; ip != "" {
-					answers = append(answers, &dns.AAAA{
-						Hdr:  dns.RR_Header{Name: q.Name, Rrtype: dns.TypeAAAA, Class: dns.ClassINET, Ttl: 60},
-						AAAA: net.ParseIP(ip),
-					})
-				}
-			}
-		}
-		if len(answers) == 0 {
-			m.SetRcode(r, dns.RcodeNameError)
-		}
-		m.Answer = answers
-		t.Logf("FakeDNSServer: (request id=%d) Ready with response after: %v", r.Id, time.Since(start))
-		// Pause to simulate a real DNS server.
-		time.Sleep(pause)
-		w.WriteMsg(m)
-		t.Logf("FakeDNSServer: (request id=%d) Sent response after: %v", r.Id, time.Since(start))
-	})
-	go dnsServer.ActivateAndServe()
-	return dnsServer
-}
-
-func TestNewWithOverrideResolver(t *testing.T) {
-	dataA := map[string]string{
-		"hostA.example.com.": "1.2.3.4",
-	}
-	dataAAAA := map[string]string{
-		"hostA.example.com.": "2001:db8::1",
-	}
-
-	callCount := 0
-	callCountMu := sync.Mutex{}
-	defaultPause := 2 * time.Millisecond
-
-	dnsServer := createFakeDNSServer(t, dataA, dataAAAA, false, defaultPause, &callCount, &callCountMu)
-	udpAdrr := dnsServer.PacketConn.LocalAddr().String()
-	t.Logf("DNS UDP server started at: %s", udpAdrr)
-	defer dnsServer.Shutdown()
-
-	dnsTCPServer := createFakeDNSServer(t, dataA, dataAAAA, true, defaultPause, &callCount, &callCountMu)
-	tcpAddr := dnsTCPServer.Listener.Addr().String()
-	t.Logf("DNS TCP server started at: %s", tcpAddr)
-	defer dnsTCPServer.Shutdown()
-
-	dnsTCPServerTimeout := createFakeDNSServer(t, dataA, dataAAAA, true, 100*time.Millisecond, &callCount, &callCountMu)
-	tcpAddrTimeout := dnsTCPServerTimeout.Listener.Addr().String()
-	t.Logf("DNS TCP server with timeout started at: %s", tcpAddrTimeout)
-	defer dnsTCPServerTimeout.Shutdown()
-
-	tests := []struct {
-		name                string
-		dnsResolverOverride string
-		resolveTimeout      time.Duration
-		runCount            int
-		wantMinCount        int
-		wantIP              string
-		wantIP6             string
-		wantParseErr        bool
-		wantResolveErr      bool
-	}{
-		{
-			name:                "valid-udp",
-			dnsResolverOverride: udpAdrr,
-			runCount:            10,
-			wantMinCount:        10,
-			wantIP:              "1.2.3.4",
-			wantIP6:             "2001:db8::1",
-		},
-		{
-			name:                "valid-tcp",
-			dnsResolverOverride: "tcp://" + tcpAddr,
-			runCount:            10,
-			wantMinCount:        20,
-			wantIP:              "1.2.3.4",
-			wantIP6:             "2001:db8::1",
-		},
-		{
-			name:                "timeout",
-			dnsResolverOverride: "tcp://" + tcpAddrTimeout,
-			resolveTimeout:      20 * time.Millisecond,
-			runCount:            10,
-			wantMinCount:        30,
-			wantResolveErr:      true,
-			wantIP:              "<nil>",
-			wantIP6:             "<nil>",
-		},
-		{
-			name:                "error",
-			dnsResolverOverride: "mars://" + tcpAddr,
-			wantParseErr:        true,
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			network, address, err := ParseOverrideAddress(tt.dnsResolverOverride)
-			if (err != nil) != tt.wantParseErr {
-				t.Errorf("ParseOverrideAddress() error = %v, wantErr %v", err, tt.wantParseErr)
-				return
-			}
-			if err != nil {
-				return
-			}
-
-			if tt.resolveTimeout == 0 {
-				tt.resolveTimeout = 100 * defaultPause
-			}
-			r := New(WithTTL(0), WithDNSServer(network, address), WithResolveTimeout(tt.resolveTimeout))
-
-			if runtime.GOOS == "windows" {
-				tt.runCount = tt.runCount / 5
-			}
-			for i := 0; i < tt.runCount; i++ {
-				t.Run(fmt.Sprintf("run-%d", i), func(t *testing.T) {
-					got, err := r.Resolve("hostA.example.com.", 4)
-					if (err != nil) != tt.wantResolveErr {
-						t.Errorf("Resolve() error = %v, wantErr %v", err, tt.wantParseErr)
-						return
-					}
-					assert.Equal(t, tt.wantIP, got.String(), "ip")
-
-					got, err = r.Resolve("hostA.example.com.", 6)
-					if (err != nil) != tt.wantResolveErr {
-						t.Errorf("Resolve() error = %v, wantErr %v", err, tt.wantParseErr)
-						return
-					}
-					assert.Equal(t, tt.wantIP6, got.String(), "ip6")
-				})
-				time.Sleep(defaultPause + 3*time.Millisecond)
-			}
-			callCountMu.Lock()
-			defer callCountMu.Unlock()
-			if runtime.GOOS == "windows" {
-				tt.wantMinCount = tt.wantMinCount / 5
-			}
-			assert.GreaterOrEqual(t, callCount, tt.wantMinCount, "callCount")
-		})
-	}
-}
-
-func TestNew(t *testing.T) {
-	b := &resolveBackendWithTracking{}
-	tests := []struct {
-		name            string
-		ttl             time.Duration
-		maxTTL          time.Duration
-		resolveFunc     func(context.Context, string, string) ([]net.IP, error)
-		wantTTL         time.Duration
-		wantMaxTTL      time.Duration
-		wantResolveFunc func(context.Context, string, string) ([]net.IP, error)
-		wantTimeout     time.Duration
-	}{
-		{
-			name:        "default",
-			wantTTL:     defaultMaxAge,
-			wantMaxTTL:  defaultMaxAge,
-			wantTimeout: defaultResolveTimeout,
-		},
-		{
-			name:        "set ttl",
-			ttl:         600 * time.Second,
-			wantTTL:     600 * time.Second,
-			wantMaxTTL:  600 * time.Second,
-			wantTimeout: defaultResolveTimeout,
-		},
-		{
-			name:        "max ttl < ttl",
-			ttl:         600 * time.Second,
-			maxTTL:      200 * time.Second,
-			wantTTL:     600 * time.Second,
-			wantMaxTTL:  600 * time.Second,
-			wantTimeout: defaultResolveTimeout,
-		},
-		{
-			name:        "max ttl > ttl",
-			ttl:         600 * time.Second,
-			maxTTL:      3600 * time.Second,
-			wantTTL:     600 * time.Second,
-			wantMaxTTL:  3600 * time.Second,
-			wantTimeout: defaultResolveTimeout,
-		},
-		{
-			name:        "timeout 10",
-			ttl:         600 * time.Second,
-			maxTTL:      3600 * time.Second,
-			wantTTL:     600 * time.Second,
-			wantMaxTTL:  3600 * time.Second,
-			wantTimeout: 10 * time.Second,
-		},
-		{
-			name:            "set resolve func",
-			resolveFunc:     b.resolve,
-			wantResolveFunc: b.resolve,
-			wantTTL:         defaultMaxAge,
-			wantMaxTTL:      defaultMaxAge,
-			wantTimeout:     defaultResolveTimeout,
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			var opts []Option
-			if tt.ttl != 0 {
-				opts = append(opts, WithTTL(tt.ttl))
-			}
-			if tt.maxTTL != 0 {
-				opts = append(opts, WithMaxTTL(tt.maxTTL))
-			}
-
-			r := New(opts...)
-			assert.Equal(t, tt.wantTTL, r.ttl, "ttl")
-			assert.Equal(t, tt.wantMaxTTL, r.maxCacheAge, "maxTTL")
-		})
-	}
-}
-
-func TestGetResolverOptions(t *testing.T) {
-	tests := []struct {
-		name         string
-		dnsServer    string
-		dnsOptions   *targetspb.DNSOptions
-		wantResolver *resolverImpl
-		wantErr      bool
-	}{
-		{
-			name:       "no options",
-			dnsOptions: &targetspb.DNSOptions{},
-			wantResolver: &resolverImpl{
-				ttl:            defaultMaxAge,
-				maxCacheAge:    defaultMaxAge,
-				resolveTimeout: defaultResolveTimeout,
-			},
-		},
-		{
-			name: "dns TTL",
-			dnsOptions: &targetspb.DNSOptions{
-				TtlSec: proto.Int32(600),
-			},
-			wantResolver: &resolverImpl{
-				ttl:            600 * time.Second,
-				maxCacheAge:    600 * time.Second,
-				resolveTimeout: defaultResolveTimeout,
-			},
-		},
-		{
-			name: "dns TTL & max TTL",
-			dnsOptions: &targetspb.DNSOptions{
-				TtlSec:         proto.Int32(600),
-				MaxCacheAgeSec: proto.Int32(1200),
-			},
-			wantResolver: &resolverImpl{
-				ttl:            600 * time.Second,
-				maxCacheAge:    1200 * time.Second,
-				resolveTimeout: defaultResolveTimeout,
-			},
-		},
-		{
-			name: "0 timeout fixed",
-			dnsOptions: &targetspb.DNSOptions{
-				BackendTimeoutMsec: proto.Int32(0),
-			},
-			wantResolver: &resolverImpl{
-				ttl:            defaultMaxAge,
-				maxCacheAge:    defaultMaxAge,
-				resolveTimeout: defaultResolveTimeout,
-			},
-		},
-		{
-			name: "dns TTL & max TTL & dns server",
-			dnsOptions: &targetspb.DNSOptions{
-				TtlSec:         proto.Int32(600),
-				MaxCacheAgeSec: proto.Int32(1200),
-				Server:         proto.String("8.8.8.8"),
-			},
-			wantResolver: &resolverImpl{
-				ttl:            600 * time.Second,
-				maxCacheAge:    1200 * time.Second,
-				resolveTimeout: defaultResolveTimeout,
-				backendServer:  "8.8.8.8:53",
-			},
-		},
-		{
-			name: "dns TTL & max TTL & dns server & resolve timeout",
-			dnsOptions: &targetspb.DNSOptions{
-				TtlSec:             proto.Int32(600),
-				MaxCacheAgeSec:     proto.Int32(1200),
-				Server:             proto.String("8.8.8.8"),
-				BackendTimeoutMsec: proto.Int32(5000),
-			},
-			wantResolver: &resolverImpl{
-				ttl:            600 * time.Second,
-				maxCacheAge:    1200 * time.Second,
-				resolveTimeout: 5 * time.Second,
-				backendServer:  "8.8.8.8:53",
-			},
-		},
-		{
-			name:      "server-address-from-targets-proto",
-			dnsServer: "tcp://1.1.1.1",
-			wantResolver: &resolverImpl{
-				ttl:            defaultMaxAge,
-				maxCacheAge:    defaultMaxAge,
-				resolveTimeout: defaultResolveTimeout,
-				backendServer:  "1.1.1.1:53",
-				backendNetwork: "tcp",
-			},
-		},
-		{
-			name:      "error-server-address-multiple",
-			dnsServer: "udp://1.1.1.1",
-			dnsOptions: &targetspb.DNSOptions{
-				Server: proto.String("udp://1.1.1.1"),
-			},
-			wantErr: true,
-		},
-		{
-			name: "error-server-address-bad",
-			dnsOptions: &targetspb.DNSOptions{
-				Server: proto.String("mars://1.1.1.1"),
-			},
-			wantErr: true,
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			targetsDef := &targetspb.TargetsDef{
-				DnsServer:  &tt.dnsServer,
-				DnsOptions: tt.dnsOptions,
-			}
-			got, err := GetResolverOptions(targetsDef, nil)
-			if (err != nil) != tt.wantErr {
-				t.Errorf("getResolverOptions() error = %v, wantErr %v", err, tt.wantErr)
-				return
-			}
-			if err != nil {
-				return
-			}
-			res := New(got...)
-			assert.Equal(t, tt.wantResolver.ttl, res.ttl, "ttl")
-			assert.Equal(t, tt.wantResolver.maxCacheAge, res.maxCacheAge, "maxCacheAge")
-			assert.Equal(t, tt.wantResolver.resolveTimeout, res.resolveTimeout, "resolveTimeout")
-			assert.Equal(t, tt.wantResolver.backendServer, res.backendServer, "backendServer")
-			assert.Equal(t, tt.wantResolver.backendNetwork, res.backendNetwork, "backendNetwork")
-		})
-	}
 }

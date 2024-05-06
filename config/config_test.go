@@ -18,34 +18,31 @@ import (
 	"bytes"
 	"encoding/json"
 	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 
-	configpb "github.com/cloudprober/cloudprober/config/proto"
-	"github.com/cloudprober/cloudprober/logger"
-	probespb "github.com/cloudprober/cloudprober/probes/proto"
-	surfacerspb "github.com/cloudprober/cloudprober/surfacers/proto"
-	targetspb "github.com/cloudprober/cloudprober/targets/proto"
-	"github.com/stretchr/testify/assert"
-	"golang.org/x/tools/txtar"
+	configpb "github.com/rishabhgargsde/cloudprober/config/proto"
+	"github.com/rishabhgargsde/cloudprober/logger"
+	probespb "github.com/rishabhgargsde/cloudprober/probes/proto"
+	surfacerspb "github.com/rishabhgargsde/cloudprober/surfacers/proto"
+	targetspb "github.com/rishabhgargsde/cloudprober/targets/proto"
 	"google.golang.org/protobuf/encoding/prototext"
 	"google.golang.org/protobuf/proto"
+	"google3/testing/gobase/runfilestest"
+	"google3/third_party/golang/testify/assert/assert"
 )
 
-func testUnmarshalConfig(t *testing.T, fileName string) (*configpb.ProberConfig, error) {
+func testConfigToProto(t *testing.T, fileName string) (*configpb.ProberConfig, error) {
 	t.Helper()
 
-	configStr, err := readConfigFile(fileName)
+	configStr, configFormat, err := readConfigFile(runfilestest.Path(t, fileName))
 	if err != nil {
 		t.Error(err)
 	}
-
-	cfg := &configpb.ProberConfig{}
-	return cfg, unmarshalConfig(configStr, formatFromFileName(fileName), cfg)
+	return configToProto(configStr, configFormat)
 }
 
-func TestUnmarshalConfig(t *testing.T) {
+func TestConfigToProto(t *testing.T) {
 	wantCfg := &configpb.ProberConfig{
 		Probe: []*probespb.ProbeDef{
 			{
@@ -73,36 +70,31 @@ func TestUnmarshalConfig(t *testing.T) {
 	}{
 		{
 			name:       "textpb",
-			configFile: "testdata/cloudprober.cfg",
+			configFile: "google3/third_party/cloudprober/config/testdata/cloudprober_base.cfg",
 			want:       wantCfg,
 		},
 		{
 			name:           "yaml",
-			configFile:     "testdata/unmarshal_test/cloudprober.yaml",
-			baseConfigFile: "testdata/unmarshal_test/cloudprober.cfg",
+			configFile:     "google3/third_party/cloudprober/config/testdata/cloudprober.yaml",
+			baseConfigFile: "google3/third_party/cloudprober/config/testdata/cloudprober.cfg",
 		},
 		{
 			name:           "json",
-			configFile:     "testdata/unmarshal_test/cloudprober.json",
-			baseConfigFile: "testdata/unmarshal_test/cloudprober.cfg",
-		},
-		{
-			name:           "jsonnet",
-			configFile:     "testdata/unmarshal_test/cloudprober.jsonnet",
-			baseConfigFile: "testdata/unmarshal_test/cloudprober.cfg",
+			configFile:     "google3/third_party/cloudprober/config/testdata/cloudprober.json",
+			baseConfigFile: "google3/third_party/cloudprober/config/testdata/cloudprober.cfg",
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := testUnmarshalConfig(t, tt.configFile)
+			got, err := testConfigToProto(t, tt.configFile)
 			if (err != nil) != tt.wantErr {
 				t.Errorf("ConfigToProto() error = %v, wantErr %v", err, tt.wantErr)
 				return
 			}
 
 			if tt.want == nil {
-				cfg, err := testUnmarshalConfig(t, tt.baseConfigFile)
+				cfg, err := testConfigToProto(t, tt.baseConfigFile)
 				if err != nil {
 					t.Errorf("Error reading the base config itself: %v", err)
 				}
@@ -115,56 +107,30 @@ func TestUnmarshalConfig(t *testing.T) {
 
 func TestConfigTest(t *testing.T) {
 	tests := []struct {
-		name           string
-		configFileFlag string
-		configFile     string
-		cs             ConfigSource
-		withBaseVars   map[string]any
-		wantErr        bool
+		name       string
+		configFile string
+		baseVars   map[string]string
+		wantErr    bool
 	}{
 		{
-			name:    "no_config_error",
-			wantErr: true,
-		},
-		{
-			name:       "valid_base",
-			configFile: "testdata/cloudprober.cfg",
-		},
-		{
-			name:           "invalid_without_vars_flag",
-			configFileFlag: "testdata/cloudprober_invalid.cfg",
-			wantErr:        true,
-		},
-		{
-			name:       "invalid_without_vars",
-			configFile: "testdata/cloudprober_invalid.cfg",
+			name: "invalid_without_vars",
+			baseVars: map[string]string{
+				"az": "us-east-1a",
+			},
+			configFile: "google3/third_party/cloudprober/config/testdata/cloudprober_invalid.cfg",
 			wantErr:    true,
 		},
 		{
-			name:       "valid_with_explicit_vars",
-			configFile: "testdata/cloudprober_invalid.cfg",
-			withBaseVars: map[string]any{
+			name: "valid_with_vars",
+			baseVars: map[string]string{
 				"probetype": "HTTP",
 			},
-		},
-		{
-			name: "valid_with_vars",
-			cs: &defaultConfigSource{
-				baseVars: map[string]any{
-					"probetype": "HTTP",
-				},
-			},
-			configFile: "testdata/cloudprober_invalid.cfg",
+			configFile: "google3/third_party/cloudprober/config/testdata/cloudprober_invalid.cfg",
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			*configFile = tt.configFileFlag
-			if tt.cs == nil && tt.configFile != "" {
-				tt.cs = ConfigSourceWithFile(tt.configFile, WithBaseVars(tt.withBaseVars))
-			}
-			*configFile = tt.configFileFlag
-			if err := ConfigTest(tt.cs); (err != nil) != tt.wantErr {
+			if err := ConfigTest(runfilestest.Path(t, tt.configFile), tt.baseVars); (err != nil) != tt.wantErr {
 				t.Errorf("ConfigTest() error = %v, wantErr %v", err, tt.wantErr)
 			}
 		})
@@ -172,15 +138,15 @@ func TestConfigTest(t *testing.T) {
 }
 
 func TestDumpConfig(t *testing.T) {
-	configFile := "testdata/surfacers_config/cloudprober_no_surfacers.cfg"
-	surfacerConfigFile := "testdata/surfacers_config/cloudprober_only_surfacers.cfg"
 	tests := []struct {
-		format  string
-		want    string
-		wantErr bool
+		configFile string
+		format     string
+		want       string
+		wantErr    bool
 	}{
 		{
-			format: "yaml",
+			configFile: "google3/third_party/cloudprober/config/testdata/cloudprober_base.cfg",
+			format:     "yaml",
 			want: `
 probe:
 - name: dns_k8s
@@ -193,7 +159,8 @@ surfacer:
 		},
 		{
 
-			format: "json",
+			configFile: "google3/third_party/cloudprober/config/testdata/cloudprober_base.cfg",
+			format:     "json",
 			want: `
 {
 	"probe": [{
@@ -208,7 +175,8 @@ surfacer:
 		},
 		{
 
-			format: "textpb",
+			configFile: "google3/third_party/cloudprober/config/testdata/cloudprober_base.cfg",
+			format:     "textpb",
 			want: `
 probe: {
   name: "dns_k8s"
@@ -225,8 +193,7 @@ surfacer: {
 	}
 	for _, tt := range tests {
 		t.Run(tt.format, func(t *testing.T) {
-			cs := ConfigSourceWithFile(configFile, WithSurfacerConfig(surfacerConfigFile))
-			got, err := DumpConfig(tt.format, cs)
+			got, err := DumpConfig(runfilestest.Path(t, tt.configFile), tt.format, nil)
 			if (err != nil) != tt.wantErr {
 				t.Errorf("DumpConfig() error = %v, wantErr %v", err, tt.wantErr)
 				return
@@ -310,99 +277,6 @@ func TestSubstEnvVars(t *testing.T) {
 			l := logger.New(logger.WithWriter(&buf))
 			assert.Equal(t, tt.want, substEnvVars(tt.configStr, l))
 			assert.Contains(t, buf.String(), tt.wantLog)
-		})
-	}
-}
-
-func TestReadConfigFile(t *testing.T) {
-	tests := []struct {
-		fileName string
-		want     string
-		wantErr  bool
-	}{
-		{
-			fileName: "testdata/include_test/cloudprober_include.team.txtar",
-		},
-		{
-			fileName: "testdata/include_test/cloudprober_include.nested.txtar",
-		},
-		{
-			fileName: "testdata/include_test/cloudprober_include.glob.txtar",
-		},
-		{
-			fileName: "testdata/include_test/cloudprober_include.error.txtar",
-			wantErr:  true,
-		},
-	}
-	for _, tt := range tests {
-		t.Run(filepath.Base(tt.fileName), func(t *testing.T) {
-			arContent, err := os.ReadFile(tt.fileName)
-			if err != nil {
-				t.Errorf("Error reading file %s: %v", tt.fileName, err)
-			}
-
-			// txtar.Parse() doesn't work with CRLF endings. os.ReadFile()
-			// on Windows is not consistent somehow, in some environments we
-			// get CRLF and in some LF.
-			arContent = []byte(strings.ReplaceAll(string(arContent), "\r\n", "\n"))
-
-			ar := txtar.Parse(arContent)
-			if len(ar.Files) < 2 {
-				t.Errorf("Expected at least 2 files in txtar, got %d. Txtar source: %s", len(ar.Files), arContent)
-				return
-			}
-
-			tmpDir, err := os.MkdirTemp("", "cloudprober-test-")
-			if err != nil {
-				t.Errorf("Error creating temp dir: %v", err)
-				return
-			}
-			defer os.RemoveAll(tmpDir)
-
-			var configFile string
-			for _, f := range ar.Files {
-				fpath := filepath.Join(tmpDir, f.Name)
-				t.Logf("Creating file %s", fpath)
-
-				fdata := strings.TrimSpace(string(f.Data))
-				if f.Name == "output" {
-					tt.want = fdata
-					continue
-				}
-
-				if f.Name == "cloudprober.cfg" {
-					configFile = fpath
-				}
-
-				if err := os.MkdirAll(filepath.Dir(fpath), 0755); err != nil {
-					t.Errorf("Error creating dir %s: %v", filepath.Dir(fpath), err)
-					return
-				}
-
-				err := os.WriteFile(fpath, []byte(fdata), 0644)
-				if err != nil {
-					t.Errorf("Error writing file %s: %v", f.Name, err)
-					return
-				}
-			}
-
-			if configFile == "" {
-				t.Errorf("Config file not found in txtar")
-				return
-			}
-
-			got, err := readConfigFile(configFile)
-			if (err != nil) != tt.wantErr {
-				t.Errorf("readConfigFile() error = %v, wantErr %v", err, tt.wantErr)
-				return
-			}
-			if err != nil {
-				return
-			}
-
-			// Clear CRLF for comparison.
-			got = strings.ReplaceAll(got, "\r\n", "\n")
-			assert.Equal(t, tt.want, got)
 		})
 	}
 }

@@ -65,7 +65,7 @@ function populateProbeData(probe) {
     d[probe].point.r = 1;
   }
 
-  // Data colums
+  // Data columns
   for (const tgt in gd.Values) {
     let vals = gd.Values[tgt];
     let freqs = gd.Freqs[tgt];
