@@ -20,8 +20,9 @@ import (
 	"time"
 	_ "time/tzdata"
 
-	configpb "github.com/cloudprober/cloudprober/probes/proto"
-	"github.com/stretchr/testify/assert"
+	"google3/third_party/golang/testify/assert/assert"
+
+	configpb "github.com/rishabhgargsde/cloudprober/probes/proto"
 	"google.golang.org/protobuf/proto"
 )
 

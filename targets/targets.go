@@ -1,4 +1,4 @@
-// Copyright 2017-2023 The Cloudprober Authors.
+// Copyright 2017-2019 The Cloudprober Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -31,25 +31,24 @@ import (
 	"sync"
 	"time"
 
-	"github.com/cloudprober/cloudprober/config/runconfig"
-	rdsclient "github.com/cloudprober/cloudprober/internal/rds/client"
-	rdsclientpb "github.com/cloudprober/cloudprober/internal/rds/client/proto"
-	rdspb "github.com/cloudprober/cloudprober/internal/rds/proto"
-	"github.com/cloudprober/cloudprober/logger"
-	"github.com/cloudprober/cloudprober/targets/endpoint"
-	"github.com/cloudprober/cloudprober/targets/file"
-	"github.com/cloudprober/cloudprober/targets/gce"
-	targetspb "github.com/cloudprober/cloudprober/targets/proto"
-	dnsRes "github.com/cloudprober/cloudprober/targets/resolver"
-	"google.golang.org/protobuf/proto"
-	"google.golang.org/protobuf/reflect/protoreflect"
+	"github.com/golang/protobuf/proto"
+	"github.com/rishabhgargsde/cloudprober/config/runconfig"
+	"github.com/rishabhgargsde/cloudprober/logger"
+	rdsclient "github.com/rishabhgargsde/cloudprober/rds/client"
+	rdsclientpb "github.com/rishabhgargsde/cloudprober/rds/client/proto"
+	rdspb "github.com/rishabhgargsde/cloudprober/rds/proto"
+	"github.com/rishabhgargsde/cloudprober/targets/endpoint"
+	"github.com/rishabhgargsde/cloudprober/targets/file"
+	"github.com/rishabhgargsde/cloudprober/targets/gce"
+	targetspb "github.com/rishabhgargsde/cloudprober/targets/proto"
+	dnsRes "github.com/rishabhgargsde/cloudprober/targets/resolver"
 )
 
 // globalResolver is a singleton DNS resolver that is used as the default
 // resolver by targets. It is a singleton because dnsRes.Resolver provides a
 // cache layer that is best shared by all probes.
 var (
-	globalResolver dnsRes.Resolver
+	globalResolver *dnsRes.Resolver
 )
 
 // Targets must have refreshed this much time after the lameduck for them to
@@ -119,12 +118,11 @@ func (d *dummy) Resolve(name string, ipVer int) (net.IP, error) {
 // providing various filtering options. Currently filtering by regex and lameduck
 // is supported.
 type targets struct {
-	lister          endpoint.Lister
-	resolver        endpoint.Resolver
-	staticEndpoints []endpoint.Endpoint
-	re              *regexp.Regexp
-	ldLister        endpoint.Lister
-	l               *logger.Logger
+	lister   endpoint.Lister
+	resolver endpoint.Resolver
+	re       *regexp.Regexp
+	ldLister endpoint.Lister
+	l        *logger.Logger
 }
 
 // Resolve either resolves a target using the core resolver, or returns an error
@@ -187,15 +185,14 @@ func (t *targets) includeInResult(ep endpoint.Endpoint, ldMap map[string]endpoin
 // associated metadata at all, those endpoint fields are left empty in that
 // case.
 func (t *targets) ListEndpoints() []endpoint.Endpoint {
-	if t.lister == nil && len(t.staticEndpoints) == 0 {
-		t.l.Error("no lister or static endpoints")
+	if t.lister == nil {
+		t.l.Error("List(): Lister t.lister is nil")
 		return []endpoint.Endpoint{}
 	}
 
-	list := append([]endpoint.Endpoint{}, t.staticEndpoints...)
-	if t.lister != nil {
-		list = append(list, t.lister.ListEndpoints()...)
-	}
+	var list []endpoint.Endpoint
+
+	list = t.lister.ListEndpoints()
 
 	ldMap := t.lameduckMap()
 	if t.re != nil || len(ldMap) != 0 {
@@ -217,17 +214,12 @@ func baseTargets(targetsDef *targetspb.TargetsDef, ldLister endpoint.Lister, l *
 	if l == nil {
 		l = &logger.Logger{}
 	}
+
 	tgts := &targets{
 		l:        l,
 		resolver: globalResolver,
 		ldLister: ldLister,
 	}
-
-	eps, err := endpoint.FromProtoMessage(targetsDef.GetEndpoint())
-	if err != nil {
-		return nil, fmt.Errorf("targets.baseTargets(): error creating static endpoints from proto: %v", err)
-	}
-	tgts.staticEndpoints = eps
 
 	if targetsDef == nil {
 		return tgts, nil
@@ -256,7 +248,10 @@ func StaticTargets(hosts string) Targets {
 }
 
 func StaticEndpoints(eps []endpoint.Endpoint) Targets {
-	return &targets{staticEndpoints: eps}
+	t, _ := baseTargets(nil, nil, nil)
+	t.lister = &staticLister{list: eps}
+	t.resolver = globalResolver
+	return t
 }
 
 // rdsClientConf converts RDS targets into RDS client configuration.
@@ -322,22 +317,13 @@ func New(targetsDef *targetspb.TargetsDef, ldLister endpoint.Lister, globalOpts 
 		return nil, fmt.Errorf("targets.New(): Error making baseTargets: %v", err)
 	}
 
-	t.resolver = globalResolver
-	opts, err := dnsRes.GetResolverOptions(targetsDef, l)
-	if err != nil {
-		return nil, fmt.Errorf("targets.New(): error creating resolver: %v", err)
-	}
-	if len(opts) > 0 {
-		t.resolver = dnsRes.New(append(opts, dnsRes.WithLogger(l))...)
-	}
-
 	switch targetsDef.Type.(type) {
 	case *targetspb.TargetsDef_HostNames:
 		st, err := staticTargets(targetsDef.GetHostNames())
 		if err != nil {
 			return nil, fmt.Errorf("targets.New(): error creating targets from host_names: %v", err)
 		}
-		t.lister = st
+		t.lister, t.resolver = st, st
 
 	case *targetspb.TargetsDef_SharedTargets:
 		sharedTargetsMu.RLock()
@@ -349,7 +335,7 @@ func New(targetsDef *targetspb.TargetsDef, ldLister endpoint.Lister, globalOpts 
 		t.lister, t.resolver = st, st
 
 	case *targetspb.TargetsDef_GceTargets:
-		s, err := gce.New(targetsDef.GetGceTargets(), globalOpts.GetGlobalGceTargetsOptions(), t.resolver, globalLogger)
+		s, err := gce.New(targetsDef.GetGceTargets(), globalOpts.GetGlobalGceTargetsOptions(), globalResolver, globalLogger)
 		if err != nil {
 			return nil, fmt.Errorf("targets.New(): error creating GCE targets: %v", err)
 		}
@@ -369,7 +355,7 @@ func New(targetsDef *targetspb.TargetsDef, ldLister endpoint.Lister, globalOpts 
 		t.lister, t.resolver = client, client
 
 	case *targetspb.TargetsDef_FileTargets:
-		ft, err := file.New(targetsDef.GetFileTargets(), t.resolver, l)
+		ft, err := file.New(targetsDef.GetFileTargets(), globalResolver, l)
 		if err != nil {
 			return nil, fmt.Errorf("target.New(): %v", err)
 		}
@@ -387,37 +373,37 @@ func New(targetsDef *targetspb.TargetsDef, ldLister endpoint.Lister, globalOpts 
 		t.lister, t.resolver = dummy, dummy
 
 	default:
-		targetsFunc, value := getExtensionTargets(targetsDef, t.l)
-		if targetsFunc != nil {
-			extT, err := targetsFunc(value, l)
-			if err != nil {
-				return nil, fmt.Errorf("targets.New(): targets extension: %v", err)
-			}
-			t.lister, t.resolver = extT, extT
+		extT, err := getExtensionTargets(targetsDef, t.l)
+		if err != nil {
+			return nil, fmt.Errorf("targets.New(): %v", err)
 		}
-	}
-
-	if t.lister == nil && len(t.staticEndpoints) == 0 {
-		return nil, fmt.Errorf("targets.New(): no targets type specified and no static endpoints")
+		t.lister, t.resolver = extT, extT
 	}
 
 	return t, nil
 }
 
-func getExtensionTargets(pb *targetspb.TargetsDef, l *logger.Logger) (newTargetsFunc func(interface{}, *logger.Logger) (Targets, error), value interface{}) {
+func getExtensionTargets(pb *targetspb.TargetsDef, l *logger.Logger) (Targets, error) {
+	extensions, err := proto.ExtensionDescs(pb)
+	if err != nil {
+		return nil, fmt.Errorf("error getting extensions from the target config (%s): %v", pb.String(), err)
+	}
+	if len(extensions) != 1 {
+		return nil, fmt.Errorf("there should be exactly one extension in the targets config (%s), got %d extensions", pb.String(), len(extensions))
+	}
+	desc := extensions[0]
+	value, err := proto.GetExtension(pb, desc)
+	if err != nil {
+		return nil, err
+	}
+	l.Infof("Extension field: %d, value: %v", desc.Field, value)
 	extensionMapMu.Lock()
 	defer extensionMapMu.Unlock()
-
-	proto.RangeExtensions(pb, func(xt protoreflect.ExtensionType, val interface{}) bool {
-		newTargetsFunc = extensionMap[int(xt.TypeDescriptor().Number())]
-		if newTargetsFunc != nil {
-			value = val
-			return false
-		}
-		return true
-	})
-
-	return
+	newTargetsFunc, ok := extensionMap[int(desc.Field)]
+	if !ok {
+		return nil, fmt.Errorf("no targets type registered for the extension: %d", desc.Field)
+	}
+	return newTargetsFunc(value, l)
 }
 
 // RegisterTargetsType registers a new targets type. New targets types are

@@ -18,15 +18,12 @@ import (
 	"net/http"
 	"os"
 	"reflect"
-	"regexp"
 	"testing"
 	"time"
 
-	"github.com/cloudprober/cloudprober/config/runconfig"
-	"github.com/cloudprober/cloudprober/metrics"
-	configpb "github.com/cloudprober/cloudprober/surfacers/proto"
-	surfacerpb "github.com/cloudprober/cloudprober/surfacers/proto"
-	"github.com/stretchr/testify/assert"
+	"github.com/rishabhgargsde/cloudprober/config/runconfig"
+	"github.com/rishabhgargsde/cloudprober/metrics"
+	configpb "github.com/rishabhgargsde/cloudprober/surfacers/proto"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -131,13 +128,12 @@ func TestAllowEventMetrics(t *testing.T) {
 
 func TestAllowMetric(t *testing.T) {
 	tests := []struct {
-		desc           string
-		metricName     []string
-		allow          string
-		ignore         string
-		disableFailure bool
-		wantMetrics    []string
-		wantErr        bool
+		desc        string
+		metricName  []string
+		allow       string
+		ignore      string
+		wantMetrics []string
+		wantErr     bool
 	}{
 		{
 			desc:        "all",
@@ -158,21 +154,15 @@ func TestAllowMetric(t *testing.T) {
 		},
 		{
 			desc:        "ignore-total",
-			metricName:  []string{"total", "success", "failure"},
+			metricName:  []string{"total", "success"},
 			ignore:      "tot.*",
-			wantMetrics: []string{"success", "failure"},
+			wantMetrics: []string{"success"},
 		},
 		{
 			desc:        "allow-total",
-			metricName:  []string{"total", "success", "failure"},
+			metricName:  []string{"total", "success"},
 			allow:       "tot.*",
 			wantMetrics: []string{"total"},
-		},
-		{
-			desc:           "disable failure metric",
-			metricName:     []string{"total", "success", "failure"},
-			disableFailure: true,
-			wantMetrics:    []string{"total", "success"},
 		},
 	}
 
@@ -181,9 +171,6 @@ func TestAllowMetric(t *testing.T) {
 			config := &configpb.SurfacerDef{
 				IgnoreMetricsWithName: proto.String(test.ignore),
 				AllowMetricsWithName:  proto.String(test.allow),
-			}
-			if test.disableFailure {
-				config.AddFailureMetric = proto.Bool(false)
 			}
 
 			opts, err := BuildOptionsFromConfig(config, nil)
@@ -217,162 +204,4 @@ func TestMain(m *testing.M) {
 	code := m.Run()
 	runconfig.SetDefaultHTTPServeMux(nil)
 	os.Exit(code)
-}
-
-func TestBuildOptions(t *testing.T) {
-	tests := []struct {
-		name    string
-		sdef    *surfacerpb.SurfacerDef
-		want    *Options
-		wantErr bool
-	}{
-		{
-			name: "default",
-			sdef: &surfacerpb.SurfacerDef{
-				Type: configpb.Type_DATADOG.Enum(),
-			},
-			want: &Options{AddFailureMetric: true},
-		},
-		{
-			name: "default_file",
-			sdef: &surfacerpb.SurfacerDef{
-				Type: configpb.Type_FILE.Enum(),
-			},
-			want: &Options{AddFailureMetric: true},
-		},
-		{
-			name: "disable_failure_metric_dd",
-			sdef: &surfacerpb.SurfacerDef{
-				Type:             configpb.Type_DATADOG.Enum(),
-				AddFailureMetric: proto.Bool(false),
-			},
-			want: &Options{
-				AddFailureMetric: false,
-			},
-		},
-		{
-			name: "enable_failure_metric_file",
-			sdef: &surfacerpb.SurfacerDef{
-				Type:             configpb.Type_FILE.Enum(),
-				AddFailureMetric: proto.Bool(true),
-			},
-			want: &Options{AddFailureMetric: true},
-		},
-		{
-			name: "custom_latency_regex",
-			sdef: &surfacerpb.SurfacerDef{
-				Type:                 configpb.Type_DATADOG.Enum(),
-				LatencyMetricPattern: proto.String("latency_.*"),
-			},
-			want: &Options{AddFailureMetric: true, latencyMetricRe: regexp.MustCompile("latency_.*")},
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			tt.want.Config = tt.sdef
-
-			if tt.want.MetricsBufferSize == 0 {
-				tt.want.MetricsBufferSize = 10000
-			}
-			if tt.want.HTTPServeMux == nil {
-				tt.want.HTTPServeMux = runconfig.DefaultHTTPServeMux()
-			}
-
-			if tt.want.latencyMetricRe == nil {
-				tt.want.latencyMetricRe = regexp.MustCompile("^(.+_|)latency$")
-			}
-
-			got, err := buildOptions(tt.sdef, true, nil)
-			if (err != nil) != tt.wantErr {
-				t.Errorf("buildOptions() error = %v, wantErr %v", err, tt.wantErr)
-				return
-			}
-			assert.Equal(t, tt.want, got)
-		})
-	}
-}
-
-func TestOptionsIsLatencyMetric(t *testing.T) {
-	tests := []struct {
-		name       string
-		opts       *Options
-		metricName []string
-		want       []bool
-	}{
-		{
-			name:       "nil",
-			metricName: []string{"latency", "dns_latency", "latency_read"},
-			want:       []bool{true, true, false},
-		},
-		{
-			name:       "non-default",
-			opts:       &Options{latencyMetricRe: regexp.MustCompile("latency_.*")},
-			metricName: []string{"latency", "dns_latency", "latency_read"},
-			want:       []bool{false, false, true},
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			for i, m := range tt.metricName {
-				assert.Equal(t, tt.want[i], tt.opts.IsLatencyMetric(m), "metricName: %s", m)
-			}
-		})
-	}
-}
-
-func TestProcessAdditionalLabels(t *testing.T) {
-	tests := []struct {
-		name        string
-		envVar      string
-		envVarValue string
-		want        [][2]string
-	}{
-		{
-			name: "empty",
-		},
-		{
-			name:        "default_name",
-			envVar:      "CLOUDPROBER_ADDITIONAL_LABELS",
-			envVarValue: "env=prod,app=identity",
-			want: [][2]string{
-				{"env", "prod"},
-				{"app", "identity"},
-			},
-		},
-		{
-			name:        "kill_space",
-			envVar:      "CLOUDPROBER_ADDITIONAL_LABELS",
-			envVarValue: " env= prod, app=identity",
-			want: [][2]string{
-				{"env", "prod"},
-				{"app", "identity"},
-			},
-		},
-		{
-			name:        "invalid_label1",
-			envVar:      "CLOUDPROBER_ADDITIONAL_LABELS",
-			envVarValue: "env=prod,=identity",
-			want: [][2]string{
-				{"env", "prod"},
-			},
-		},
-		{
-			name:        "invalid_label2",
-			envVar:      "CLOUDPROBER_ADDITIONAL_LABELS",
-			envVarValue: "env=,app=identity",
-			want: [][2]string{
-				{"app", "identity"},
-			},
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			os.Setenv(tt.envVar, tt.envVarValue)
-			defer os.Unsetenv(tt.envVar)
-
-			if got := processAdditionalLabels(tt.envVar, nil); !reflect.DeepEqual(got, tt.want) {
-				t.Errorf("processAdditionalLabels() = %v, want %v", got, tt.want)
-			}
-		})
-	}
 }

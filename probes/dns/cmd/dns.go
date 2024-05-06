@@ -20,19 +20,18 @@ package main
 import (
 	"context"
 	"fmt"
-	"log"
+	"io/ioutil"
 	"net"
-	"os"
 	"time"
 
 	"flag"
-
-	"github.com/cloudprober/cloudprober/metrics"
-	"github.com/cloudprober/cloudprober/probes/dns"
-	configpb "github.com/cloudprober/cloudprober/probes/dns/proto"
-	"github.com/cloudprober/cloudprober/probes/options"
-	"github.com/cloudprober/cloudprober/targets"
-	"google.golang.org/protobuf/encoding/prototext"
+	"github.com/golang/glog"
+	"github.com/golang/protobuf/proto"
+	"github.com/rishabhgargsde/cloudprober/metrics"
+	"github.com/rishabhgargsde/cloudprober/probes/dns"
+	configpb "github.com/rishabhgargsde/cloudprober/probes/dns/proto"
+	"github.com/rishabhgargsde/cloudprober/probes/options"
+	"github.com/rishabhgargsde/cloudprober/targets"
 )
 
 var (
@@ -50,12 +49,12 @@ func main() {
 
 	// If we are given a config file, read it. If not, use defaults.
 	if *config != "" {
-		b, err := os.ReadFile(*config)
+		b, err := ioutil.ReadFile(*config)
 		if err != nil {
-			log.Fatal(err)
+			glog.Exit(err)
 		}
-		if err := prototext.Unmarshal(b, c); err != nil {
-			log.Fatalf("Error while parsing config protobuf %s: Err: %v", string(b), err)
+		if err := proto.UnmarshalText(string(b), c); err != nil {
+			glog.Exitf("Error while parsing config protobuf %s: Err: %v", string(b), err)
 		}
 	}
 
@@ -69,12 +68,12 @@ func main() {
 	if *sourceIP != "" {
 		opts.SourceIP = net.ParseIP(*sourceIP)
 		if opts.SourceIP == nil {
-			log.Fatalf("Error parsing source IP: %s", *sourceIP)
+			glog.Exitf("Error parsing source IP: %s", *sourceIP)
 		}
 	}
 	dp := &dns.Probe{}
 	if err := dp.Init("dns_test", opts); err != nil {
-		log.Fatalf("Error in initializing probe %s from the config. Err: %v", "dns_test", err)
+		glog.Exitf("Error in initializing probe %s from the config. Err: %v", "dns_test", err)
 	}
 	dataChan := make(chan *metrics.EventMetrics, 1000)
 	go dp.Start(context.Background(), dataChan)

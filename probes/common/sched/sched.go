@@ -21,9 +21,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/cloudprober/cloudprober/metrics"
-	"github.com/cloudprober/cloudprober/probes/options"
-	"github.com/cloudprober/cloudprober/targets/endpoint"
+	"github.com/rishabhgargsde/cloudprober/metrics"
+	"github.com/rishabhgargsde/cloudprober/probes/options"
+	"github.com/rishabhgargsde/cloudprober/targets/endpoint"
 )
 
 // DefaultTargetsUpdateInterval defines default frequency for target updates.
@@ -31,7 +31,7 @@ import (
 // max(DefaultTargetsUpdateInterval, probe_interval)
 var DefaultTargetsUpdateInterval = 1 * time.Minute
 
-func CtxDone(ctx context.Context) bool {
+func ctxDone(ctx context.Context) bool {
 	select {
 	case <-ctx.Done():
 		return true
@@ -43,31 +43,17 @@ func CtxDone(ctx context.Context) bool {
 // ProbeResult represents results of a probe run.
 type ProbeResult interface {
 	// Metrics returns ProbeResult metrics as a metrics.EventMetrics object.
-	// This EventMetrics object should not be reused for further accounting
-	// because it's modified by the scheduler and later on when it's pushed
-	// to the data channel.
-	Metrics(timeStamp time.Time, runID int64, opts *options.Options) *metrics.EventMetrics
+	Metrics(time.Time, *options.Options) *metrics.EventMetrics
 }
 
+// Scheduler holds the information for running the probe for a given schedule, per-target.
 type Scheduler struct {
-	ProbeName string
-	DataChan  chan *metrics.EventMetrics
-	Opts      *options.Options
-
-	// NewResult may or may not make use of the provided target. It's useful
-	// you want to handle result objects yourself, for example to share them
-	// across targets. See grpc probe for an example.
-	NewResult func(target *endpoint.Endpoint) ProbeResult
-
-	// ListEndpoints is optional. If not provided, we just call the default
-	// lister: opts.Tagets.ListEndpoints(). See grpc probe for an example of
-	// how to use this field.
-	ListEndpoints func() []endpoint.Endpoint
-
-	StartForTarget func(ctx context.Context, target endpoint.Endpoint)
-
-	// RunProbeForTarget is called per probe cycle for each target.
-	RunProbeForTarget func(context.Context, endpoint.Endpoint, ProbeResult)
+	ProbeName              string
+	DataChan               chan *metrics.EventMetrics
+	Opts                   *options.Options
+	NewResult              func() ProbeResult
+	RunProbeForTarget      func(context.Context, endpoint.Endpoint, ProbeResult)
+	IntervalBetweenTargets time.Duration
 
 	statsExportFrequency  int64
 	targetsUpdateInterval time.Duration
@@ -95,72 +81,52 @@ func (s *Scheduler) init() {
 }
 
 func (s *Scheduler) gapBetweenTargets() time.Duration {
-	var interTargetGap time.Duration
+	interTargetGap := s.IntervalBetweenTargets
 
-	if s.Opts.ProbeConf != nil {
-		type confTargetGap interface {
-			GetIntervalBetweenTargetsMsec() int32
-		}
-
-		if c, ok := s.Opts.ProbeConf.(confTargetGap); ok {
-			interTargetGap = time.Duration(c.GetIntervalBetweenTargetsMsec()) * time.Millisecond
-		}
+	// If not configured by user, determine based on probe interval and number of
+	// targets.
+	if interTargetGap == 0 && len(s.targets) != 0 {
+		// Use 1/10th of the probe interval to spread out target groroutines.
+		interTargetGap = s.Opts.Interval / time.Duration(10*len(s.targets))
 	}
 
-	if interTargetGap != 0 || len(s.targets) == 0 {
-		return interTargetGap
-	}
-
-	// If not configured by user, determine based on probe interval and number
-	// of targets. Use 1/10th of the probe interval to spread out target
-	// goroutines.
-	return s.Opts.Interval / time.Duration(10*len(s.targets))
+	return interTargetGap
 }
 
 func (s *Scheduler) startForTarget(ctx context.Context, target endpoint.Endpoint) {
 	s.Opts.Logger.Debug("Starting probing for the target ", target.Name)
 
-	if s.StartForTarget != nil {
-		s.StartForTarget(ctx, target)
-		return
-	}
-
 	// We use this counter to decide when to export stats.
 	var runCnt int64
 
-	result := s.NewResult(&target)
+	result := s.NewResult()
 
 	ticker := time.NewTicker(s.Opts.Interval)
 	defer ticker.Stop()
 
 	for ts := time.Now(); true; ts = <-ticker.C {
 		// Don't run another probe if context is canceled already.
-		if CtxDone(ctx) {
+		if ctxDone(ctx) {
 			return
 		}
 		if !s.Opts.IsScheduled() {
 			continue
 		}
-
-		ctx, cancelCtx := context.WithTimeout(ctx, s.Opts.Timeout)
 		s.RunProbeForTarget(ctx, target, result)
-		cancelCtx()
 
 		// Export stats if it's the time to do so.
 		runCnt++
 		if (runCnt % s.statsExportFrequency) == 0 {
-			em := result.Metrics(ts, runCnt, s.Opts)
-			// Returning nil is a way to skip this target. Used by grpc probe.
-			if em == nil {
-				continue
-			}
-			em.AddLabel("probe", s.ProbeName).
+			em := result.Metrics(ts, s.Opts).
+				AddLabel("probe", s.ProbeName).
 				AddLabel("dst", target.Dst())
+
 			s.Opts.RecordMetrics(target, em, s.DataChan)
 		}
 	}
 }
 
+// Wait waits for all probe loops to finish.
 func (s *Scheduler) Wait() {
 	s.waitGroup.Wait()
 }
@@ -170,16 +136,9 @@ func (s *Scheduler) Wait() {
 // Note that this function is not concurrency safe. It is never called
 // concurrently by Start().
 func (s *Scheduler) refreshTargets(ctx context.Context) {
-	var newTargets []endpoint.Endpoint
-	if s.ListEndpoints != nil {
-		newTargets = s.ListEndpoints()
-	} else {
-		newTargets = s.Opts.Targets.ListEndpoints()
-	}
+	s.targets = s.Opts.Targets.ListEndpoints()
 
 	s.Opts.Logger.Debugf("Probe(%s) got %d targets", s.ProbeName, len(s.targets))
-
-	s.targets = newTargets
 
 	// updatedTargets is used only for logging.
 	updatedTargets := make(map[string]string)
@@ -240,6 +199,7 @@ func (s *Scheduler) refreshTargets(ctx context.Context) {
 	}
 }
 
+// UpdateTargetsAndStartProbes updates targets and starts probes.
 func (s *Scheduler) UpdateTargetsAndStartProbes(ctx context.Context) {
 	defer s.Wait()
 
@@ -257,7 +217,7 @@ func (s *Scheduler) UpdateTargetsAndStartProbes(ctx context.Context) {
 	}
 
 	for {
-		if CtxDone(ctx) {
+		if ctxDone(ctx) {
 			return
 		}
 		if len(s.targets) != 0 {

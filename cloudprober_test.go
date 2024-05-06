@@ -21,17 +21,15 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cloudprober/cloudprober/config"
-	configpb "github.com/cloudprober/cloudprober/config/proto"
-	serverspb "github.com/cloudprober/cloudprober/internal/servers/proto"
-	udpserverpb "github.com/cloudprober/cloudprober/internal/servers/udp/proto"
-	"github.com/cloudprober/cloudprober/metrics"
-	probepb "github.com/cloudprober/cloudprober/probes/proto"
-	udpprobepb "github.com/cloudprober/cloudprober/probes/udp/proto"
-	"github.com/cloudprober/cloudprober/surfacers"
-	surfacerspb "github.com/cloudprober/cloudprober/surfacers/proto"
-	targetspb "github.com/cloudprober/cloudprober/targets/proto"
-	"github.com/stretchr/testify/assert"
+	configpb "github.com/rishabhgargsde/cloudprober/config/proto"
+	"github.com/rishabhgargsde/cloudprober/metrics"
+	probepb "github.com/rishabhgargsde/cloudprober/probes/proto"
+	udpprobepb "github.com/rishabhgargsde/cloudprober/probes/udp/proto"
+	serverspb "github.com/rishabhgargsde/cloudprober/servers/proto"
+	udpserverpb "github.com/rishabhgargsde/cloudprober/servers/udp/proto"
+	"github.com/rishabhgargsde/cloudprober/surfacers"
+	surfacerspb "github.com/rishabhgargsde/cloudprober/surfacers/proto"
+	targetspb "github.com/rishabhgargsde/cloudprober/targets/proto"
 	"google.golang.org/protobuf/encoding/prototext"
 	"google.golang.org/protobuf/proto"
 )
@@ -202,7 +200,7 @@ func TestRestart(t *testing.T) {
 			defer os.Remove(tmpfile.Name())
 			os.WriteFile(tmpfile.Name(), []byte(prototext.Format(cfg)), 0644)
 
-			err = InitWithConfigSource(config.ConfigSourceWithFile(tmpfile.Name()))
+			err = InitFromConfig(tmpfile.Name())
 			if err != nil {
 				t.Fatalf("Err: %v, Config: %s", err, prototext.Format(cfg))
 			}
@@ -216,47 +214,6 @@ func TestRestart(t *testing.T) {
 				t.Fatal("surfacer timed out before getting results")
 			case <-s.c:
 			}
-		})
-	}
-}
-
-func TestCloudproberConfig(t *testing.T) {
-	rawCfg := `probe { type: PING, name: "test_probe", targets { host_names: "localhost" }}`
-	f, err := os.CreateTemp("", "cloudprober_test")
-	if err != nil {
-		t.Fatalf("os.CreateTemp(): %v", err)
-	}
-	defer os.Remove(f.Name())
-	os.WriteFile(f.Name(), []byte(rawCfg), 0644)
-
-	tests := []struct {
-		name             string
-		fileName         string
-		wantProbename    string
-		wantRawConfig    string
-		wantParsedConfig string
-	}{
-		{
-			name:             "config from file",
-			fileName:         f.Name(),
-			wantProbename:    "test_probe",
-			wantRawConfig:    rawCfg,
-			wantParsedConfig: rawCfg,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			configSrc := config.ConfigSourceWithFile(tt.fileName)
-
-			cloudProber.Lock()
-			cloudProber.configSource = configSrc
-			cloudProber.config, _ = configSrc.GetConfig()
-			cloudProber.Unlock()
-
-			assert.Equal(t, tt.wantProbename, GetConfig().GetProbe()[0].GetName(), "GetConfig()")
-			assert.Equal(t, tt.wantRawConfig, GetRawConfig(), "GetRawConfig()")
-			assert.Equal(t, tt.wantParsedConfig, GetParsedConfig(), "GetParsedConfig()")
 		})
 	}
 }

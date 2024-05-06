@@ -21,15 +21,16 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cloudprober/cloudprober/common/iputils"
-	"github.com/cloudprober/cloudprober/internal/alerting"
-	alerting_configpb "github.com/cloudprober/cloudprober/internal/alerting/proto"
-	"github.com/cloudprober/cloudprober/logger"
-	"github.com/cloudprober/cloudprober/metrics"
-	configpb "github.com/cloudprober/cloudprober/probes/proto"
-	"github.com/cloudprober/cloudprober/targets/endpoint"
-	targetspb "github.com/cloudprober/cloudprober/targets/proto"
-	"github.com/stretchr/testify/assert"
+	"google3/third_party/golang/testify/assert/assert"
+
+	"github.com/rishabhgargsde/cloudprober/common/iputils"
+	"github.com/rishabhgargsde/cloudprober/logger"
+	"github.com/rishabhgargsde/cloudprober/metrics"
+	"github.com/rishabhgargsde/cloudprober/probes/alerting"
+	alerting_configpb "github.com/rishabhgargsde/cloudprober/probes/alerting/proto"
+	configpb "github.com/rishabhgargsde/cloudprober/probes/proto"
+	"github.com/rishabhgargsde/cloudprober/targets/endpoint"
+	targetspb "github.com/rishabhgargsde/cloudprober/targets/proto"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -482,57 +483,6 @@ func TestNilTargets(t *testing.T) {
 				return
 			}
 			assert.Equal(t, tt.wantEndpoints, got.Targets.ListEndpoints())
-		})
-	}
-}
-
-func TestOptionsLogMetrics(t *testing.T) {
-	var called int
-	overrideFn := func(em *metrics.EventMetrics) {
-		called++
-	}
-
-	tests := []struct {
-		name              string
-		pConf             *configpb.ProbeDef
-		wantNilLogMetrics bool
-		wantInc           int
-	}{
-		{
-			name: "default",
-			pConf: &configpb.ProbeDef{
-				Targets: testTargets,
-			},
-			wantNilLogMetrics: true,
-			wantInc:           0,
-		},
-		{
-			name: "inc",
-			pConf: &configpb.ProbeDef{
-				Targets:      testTargets,
-				DebugOptions: &configpb.DebugOptions{LogMetrics: proto.Bool(true)},
-			},
-			wantNilLogMetrics: false,
-			wantInc:           1,
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			opts, err := BuildProbeOptions(tt.pConf, nil, nil, nil)
-			if err != nil {
-				t.Errorf("Unexpected BuildProbeOptions() error = %v", err)
-				return
-			}
-
-			assert.Equal(t, tt.wantNilLogMetrics, opts.logMetricsOverride == nil)
-
-			// Try calling LogMetrics()
-			if opts.logMetricsOverride != nil {
-				opts.logMetricsOverride = overrideFn
-			}
-			oldCalled := called
-			opts.LogMetrics(metrics.NewEventMetrics(time.Now()))
-			assert.Equal(t, tt.wantInc, called-oldCalled)
 		})
 	}
 }

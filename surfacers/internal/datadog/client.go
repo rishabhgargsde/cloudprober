@@ -20,7 +20,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
+	"io/ioutil"
 	"net/http"
 	"os"
 )
@@ -132,7 +132,7 @@ func (c *ddClient) submitMetrics(ctx context.Context, series []ddSeries) error {
 	}
 
 	if resp.StatusCode >= 300 {
-		b, _ := io.ReadAll(resp.Body)
+		b, _ := ioutil.ReadAll(resp.Body)
 		return fmt.Errorf("error, HTTP status: %d, full response: %s", resp.StatusCode, string(b))
 	}
 

@@ -28,15 +28,15 @@ import (
 	"strings"
 	"time"
 
-	"cloud.google.com/go/compute/metadata"
-	"github.com/cloudprober/cloudprober/logger"
+	"github.com/rishabhgargsde/cloudprober/logger"
 	"golang.org/x/oauth2/google"
 	monitoring "google.golang.org/api/monitoring/v3"
 	"google.golang.org/api/option"
+	"google3/third_party/golang/cloud_google_com/go/compute/v/v0/metadata/metadata"
 
-	"github.com/cloudprober/cloudprober/metrics"
-	"github.com/cloudprober/cloudprober/surfacers/internal/common/options"
-	configpb "github.com/cloudprober/cloudprober/surfacers/internal/stackdriver/proto"
+	"github.com/rishabhgargsde/cloudprober/metrics"
+	"github.com/rishabhgargsde/cloudprober/surfacers/internal/common/options"
+	configpb "github.com/rishabhgargsde/cloudprober/surfacers/internal/stackdriver/proto"
 )
 
 const (
@@ -190,12 +190,13 @@ func (s *SDSurfacer) createMetricDescriptor(ts *monitoring.TimeSeries) error {
 }
 
 // writeBatch polls the writeChan and the sendChan waiting for either a new
-// write packet or a new context. When data comes in on the writeChan, it is
-// pulled off and put into the cache. When ticker fires, metrics in the cache
-// are batched together and pushed to the Stackdriver (SD) API. SD API has a
-// limit on the maximum number of metrics that can be sent in a single request,
-// so we may have to make multiple requests to the SD API to send the entire
-// cache.
+// write packet or a new context. If data comes in on the writeChan, then
+// the data is pulled off and put into the cache (if there is already an
+// entry into the cache for the same metric, it updates the metric to the
+// new data). If ticker fires, then the metrics in the cache
+// are batched together. The Stackdriver API has a limit on the maximum number
+// of metrics that can be sent in a single request, so we may have to make
+// multiple requests to the Stackdriver API to send the full cache of metrics.
 //
 // writeBatch is set up to run as an infinite goroutine call in the New function
 // to allow it to write asynchronously to Stack Driver.
@@ -334,10 +335,10 @@ func (s *SDSurfacer) recordTimeSeries(bm *baseMetric, tv *monitoring.TypedValue)
 	// We create a key that is a composite of both the name and the
 	// labels so we can make sure that the cache holds all distinct
 	// values and not just the ones with different names.
-	k := bm.name + "," + bm.cacheKey
+	s.cache[bm.name+","+bm.cacheKey] = ts
 
-	s.cache[k] = ts
 	return ts
+
 }
 
 // sdKind converts EventMetrics kind to StackDriver kind string.
@@ -420,7 +421,6 @@ func recordMapValue[T int64 | float64](s *SDSurfacer, bm *baseMetric, m *metrics
 	for _, mapKey := range m.Keys() {
 		mbm := bm.Clone()
 		mbm.labels[m.MapName] = mapKey
-		mbm.cacheKey += "," + m.MapName + "=" + mapKey
 		f := float64(m.GetKey(mapKey))
 		ts = append(ts, s.recordTimeSeries(mbm, &monitoring.TypedValue{DoubleValue: &f}))
 	}
@@ -450,8 +450,13 @@ func (s *SDSurfacer) recordEventMetrics(em *metrics.EventMetrics) (ts []*monitor
 		bm := baseM.Clone()
 		bm.name = name
 
-		if s.opts.IsLatencyMetric(k) {
-			bm.unit = metrics.LatencyUnitToString(em.LatencyUnit)
+		if k == "latency" {
+			bm.unit = map[time.Duration]string{
+				time.Second:      "s",
+				time.Millisecond: "ms",
+				time.Microsecond: "us",
+				time.Nanosecond:  "ns",
+			}[em.LatencyUnit]
 		}
 
 		switch val := em.Metric(k).(type) {

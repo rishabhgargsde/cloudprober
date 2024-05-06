@@ -18,10 +18,11 @@ import (
 	"fmt"
 	"testing"
 
-	k8sconfigpb "github.com/cloudprober/cloudprober/internal/rds/kubernetes/proto"
-	rdspb "github.com/cloudprober/cloudprober/internal/rds/proto"
-	targetspb "github.com/cloudprober/cloudprober/targets/proto"
-	"github.com/stretchr/testify/assert"
+	"google3/third_party/golang/testify/assert/assert"
+
+	k8sconfigpb "github.com/rishabhgargsde/cloudprober/rds/kubernetes/proto"
+	rdspb "github.com/rishabhgargsde/cloudprober/rds/proto"
+	targetspb "github.com/rishabhgargsde/cloudprober/targets/proto"
 	"google.golang.org/protobuf/encoding/prototext"
 	"google.golang.org/protobuf/proto"
 )
@@ -88,7 +89,7 @@ func Test_parseConfig(t *testing.T) {
 	}
 }
 
-func TestRDSRequest(t *testing.T) {
+func Test_rdsRequest(t *testing.T) {
 	tests := []struct {
 		resources  string
 		nameF      string
@@ -108,19 +109,28 @@ func TestRDSRequest(t *testing.T) {
 			want: &rdspb.ListResourcesRequest{
 				Provider:     proto.String("k8s"),
 				ResourcePath: proto.String("test-resources"),
-				Filter:       []*rdspb.Filter{{Key: proto.String("name"), Value: proto.String("service")}},
+				Filter:       []*rdspb.Filter{{Key: proto.String("name"), Value: proto.String("^service$")}},
+			},
+		},
+		{
+			resources: "test-resources",
+			nameF:     "^.*-service",
+			want: &rdspb.ListResourcesRequest{
+				Provider:     proto.String("k8s"),
+				ResourcePath: proto.String("test-resources"),
+				Filter:       []*rdspb.Filter{{Key: proto.String("name"), Value: proto.String("^.*-service$")}},
 			},
 		},
 		{
 			resources:  "test-resources",
 			nameF:      ".*-service",
-			portFilter: "^.*dns.*",
+			portFilter: ".*dns.*",
 			want: &rdspb.ListResourcesRequest{
 				Provider:     proto.String("k8s"),
 				ResourcePath: proto.String("test-resources"),
 				Filter: []*rdspb.Filter{
-					{Key: proto.String("name"), Value: proto.String(".*-service")},
-					{Key: proto.String("port"), Value: proto.String("^.*dns.*")},
+					{Key: proto.String("name"), Value: proto.String("^.*-service$")},
+					{Key: proto.String("port"), Value: proto.String(".*dns.*")},
 				},
 			},
 		},

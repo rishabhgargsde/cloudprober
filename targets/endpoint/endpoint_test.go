@@ -18,11 +18,8 @@ import (
 	"fmt"
 	"net"
 	"testing"
-	"time"
 
-	endpointpb "github.com/cloudprober/cloudprober/targets/endpoint/proto"
-	"github.com/stretchr/testify/assert"
-	"google.golang.org/protobuf/proto"
+	"google3/third_party/golang/testify/assert/assert"
 )
 
 func TestEndpointsFromNames(t *testing.T) {
@@ -46,12 +43,11 @@ func TestEndpointsFromNames(t *testing.T) {
 
 func TestKey(t *testing.T) {
 	for _, test := range []struct {
-		name         string
-		port         int
-		labels       map[string]string
-		ip           net.IP
-		ignoreLabels []string
-		key          string
+		name   string
+		port   int
+		labels map[string]string
+		ip     net.IP
+		key    string
 	}{
 		{
 			name: "t1",
@@ -67,14 +63,6 @@ func TestKey(t *testing.T) {
 			key:    "t1_1234:5678::72_80_app:cloudprober_dc:xx",
 		},
 		{
-			name:         "t1",
-			port:         80,
-			ip:           net.ParseIP("1234:5678::72"),
-			labels:       map[string]string{"app": "cloudprober", "dc": "xx"},
-			ignoreLabels: []string{"dc"},
-			key:          "t1_1234:5678::72_80_app:cloudprober",
-		},
-		{
 			name:   "t1",
 			port:   80,
 			labels: map[string]string{"dc": "xx", "app": "cloudprober"},
@@ -88,11 +76,7 @@ func TestKey(t *testing.T) {
 			Labels: test.labels,
 		}
 		t.Run(fmt.Sprintf("%v", ep), func(t *testing.T) {
-			var opts []KeyOption
-			if test.ignoreLabels != nil {
-				opts = append(opts, WithIgnoreLabels(test.ignoreLabels...))
-			}
-			key := ep.Key(opts...)
+			key := ep.Key()
 			if key != test.key {
 				t.Errorf("Got key: %s, want: %s", key, test.key)
 			}
@@ -124,258 +108,4 @@ func TestEndpointDst(t *testing.T) {
 			assert.Equal(t, tt.want, tt.ep.Dst(), "destination")
 		})
 	}
-}
-
-func TestParseURL(t *testing.T) {
-	type parts struct {
-		scheme, host, path string
-		port               int
-	}
-	tests := []struct {
-		name      string
-		s         string
-		wantParts parts
-		wantErr   bool
-	}{
-		{
-			s:         "http://host:8080/path",
-			wantParts: parts{scheme: "http", host: "host", path: "/path", port: 8080},
-		},
-		{
-			s:         "https://host:8080",
-			wantParts: parts{scheme: "https", host: "host", path: "/", port: 8080},
-		},
-		{
-			s:         "http://host/path?query=1",
-			wantParts: parts{scheme: "http", host: "host", path: "/path?query=1", port: 0},
-		},
-		{
-			s:         "http://[abcf::0000]/path?query=1",
-			wantParts: parts{scheme: "http", host: "abcf::0000", path: "/path?query=1", port: 0},
-		},
-		{
-			s:         "http://[abcf::0000]:8080/path?query=1",
-			wantParts: parts{scheme: "http", host: "abcf::0000", path: "/path?query=1", port: 8080},
-		},
-		{
-			s:         "http://[abcf::0000]:8080/path?query=1",
-			wantParts: parts{scheme: "http", host: "abcf::0000", path: "/path?query=1", port: 8080},
-		},
-		{
-			s:       "http://[abcf::0000/path?query=1",
-			wantErr: true,
-		},
-		{
-			s:       "http://[abcf::0000]:asd/path?query=1",
-			wantErr: true,
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.s, func(t *testing.T) {
-			gotScheme, gotHost, gotPath, gotPort, err := parseURL(tt.s)
-			if (err != nil) != tt.wantErr {
-				t.Errorf("parseURL() error = %v, wantErr %v", err, tt.wantErr)
-				return
-			}
-			if err != nil {
-				return
-			}
-			assert.Equal(t, tt.wantParts.scheme, gotScheme, "scheme")
-			assert.Equal(t, tt.wantParts.host, gotHost, "host")
-			assert.Equal(t, tt.wantParts.path, gotPath, "path")
-			assert.Equal(t, tt.wantParts.port, gotPort, "port")
-		})
-	}
-}
-
-func TestFromProtoMessage(t *testing.T) {
-	tests := []struct {
-		name        string
-		endpointspb []*endpointpb.Endpoint
-		want        []Endpoint
-		wantErr     bool
-	}{
-		{
-			name: "static endpoints",
-			endpointspb: []*endpointpb.Endpoint{
-				{
-					Name: proto.String("host1_url1"),
-					Url:  proto.String("http://host1:8080/url1"),
-				},
-				{
-					Name:   proto.String("host2"),
-					Url:    proto.String("https://host2.com"),
-					Labels: map[string]string{"app": "frontend-cloudprober"},
-				},
-			},
-			want: []Endpoint{
-				{
-					Name: "host1_url1",
-					Labels: map[string]string{
-						"__cp_scheme__": "http",
-						"__cp_host__":   "host1",
-						"__cp_path__":   "/url1",
-					},
-					Port: 8080,
-				},
-				{
-					Name: "host2",
-					Labels: map[string]string{
-						"app":           "frontend-cloudprober",
-						"__cp_scheme__": "https",
-						"__cp_host__":   "host2.com",
-						"__cp_path__":   "/",
-					},
-				},
-			},
-		},
-		{
-			name: "same keys error",
-			endpointspb: []*endpointpb.Endpoint{
-				{
-					Name: proto.String("host1_url1"),
-					Url:  proto.String("http://host1:8080/url1"),
-				},
-				{
-					Name: proto.String("host1_url1"),
-					Url:  proto.String("http://host1:8080/url1"),
-				},
-			},
-			wantErr: true,
-		},
-		{
-			name: "different keys",
-			endpointspb: []*endpointpb.Endpoint{
-				{
-					Name: proto.String("host1"),
-					Url:  proto.String("http://host1/url1"),
-				},
-				{
-					Name: proto.String("host1"),
-					Url:  proto.String("http://host1/url2"),
-				},
-			},
-			want: []Endpoint{
-				{
-					Name: "host1",
-					Labels: map[string]string{
-						"__cp_scheme__": "http",
-						"__cp_host__":   "host1",
-						"__cp_path__":   "/url1",
-					},
-				},
-				{
-					Name: "host1",
-					Labels: map[string]string{
-						"__cp_scheme__": "http",
-						"__cp_host__":   "host1",
-						"__cp_path__":   "/url2",
-					},
-				},
-			},
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got, err := FromProtoMessage(tt.endpointspb)
-			if (err != nil) != tt.wantErr {
-				t.Errorf("FromProtoMessage() error = %v, wantErr %v", err, tt.wantErr)
-				return
-			}
-			for i := range got {
-				got[i].LastUpdated = time.Time{}
-			}
-			assert.Equal(t, tt.want, got, "endpoints")
-		})
-	}
-}
-
-type testResolver struct {
-	data map[string]net.IP
-}
-
-func (tr *testResolver) Resolve(name string, ipVersion int) (net.IP, error) {
-	if tr.data == nil {
-		tr.data = make(map[string]net.IP)
-	}
-	if tr.data[name] == nil {
-		return nil, fmt.Errorf("no such host: %s", name)
-	}
-	return tr.data[name], nil
-}
-
-func TestEndpointResolve(t *testing.T) {
-	res := &testResolver{
-		data: map[string]net.IP{
-			"host1": net.ParseIP("10.10.3.4"),
-			"host2": net.ParseIP("2001:db8::1"),
-		},
-	}
-
-	tests := []struct {
-		name      string
-		ep        Endpoint
-		ipVersion int
-		opts      []ResolverOption
-		wantIP    string
-		wantErr   bool
-	}{
-		{
-			name:   "contains valid ip",
-			ep:     Endpoint{Name: "host0", IP: net.ParseIP("10.1.1.1")},
-			wantIP: "10.1.1.1",
-		},
-		{
-			name:      "no ipv6",
-			ep:        Endpoint{Name: "host0", IP: net.ParseIP("10.1.1.1")},
-			ipVersion: 6,
-			wantErr:   true,
-		},
-		{
-			name:   "use_resolver",
-			ep:     Endpoint{Name: "host1"},
-			wantIP: "10.10.3.4",
-		},
-		{
-			name:      "name_override",
-			ep:        Endpoint{Name: "host0"},
-			opts:      []ResolverOption{WithNameOverride("host2")},
-			ipVersion: 6,
-			wantIP:    "2001:db8::1",
-		},
-		{
-			name:    "no host",
-			ep:      Endpoint{Name: "host0"},
-			opts:    []ResolverOption{WithNameOverride("host3")},
-			wantErr: true,
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got, err := tt.ep.Resolve(tt.ipVersion, res, tt.opts...)
-			if (err != nil) != tt.wantErr {
-				t.Errorf("Endpoint.Resolve() error = %v, wantErr %v", err, tt.wantErr)
-				return
-			}
-			if err != nil {
-				return
-			}
-			assert.Equal(t, tt.wantIP, got.String(), "resolved IP")
-		})
-	}
-}
-
-func TestEndpointClone(t *testing.T) {
-	src := &Endpoint{
-		Name: "ep-1",
-		IP:   net.ParseIP("1.1.1.1"),
-		Port: 80,
-		Labels: map[string]string{
-			"app": "cloudprober",
-		},
-	}
-	cloned := src.Clone()
-	assert.Equal(t, src, cloned, "cloned endpoint")
-	cloned.Labels["app"] = "cloudprober2"
-	assert.NotEqual(t, src, cloned, "cloned endpoint")
 }

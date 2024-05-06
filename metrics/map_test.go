@@ -20,7 +20,7 @@ import (
 	"strconv"
 	"testing"
 
-	"github.com/stretchr/testify/assert"
+	"google3/third_party/golang/testify/assert/assert"
 )
 
 func verify[T Number](t *testing.T, m *Map[T], expectedKeys []string, expectedMap map[string]T) {
@@ -168,14 +168,14 @@ func TestMapString(t *testing.T) {
 			wantString: "map:code,200:4000,403:2",
 		},
 		{
-			name:        "int64 float errror",
+			name:        "int64 float error",
 			typ:         "int64",
 			wantString:  "map:code,200:4000,403:2",
 			parseString: "map:code,200:400.2,403:2",
 			wantErr:     true,
 		},
 		{
-			name:        "int64 format errror",
+			name:        "int64 format error",
 			typ:         "int64",
 			wantString:  "map:code,200:4000,403:2",
 			parseString: "map:code,200:4000403:2",

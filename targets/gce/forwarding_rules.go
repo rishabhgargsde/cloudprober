@@ -22,11 +22,11 @@ import (
 	"sync"
 	"time"
 
-	"cloud.google.com/go/compute/metadata"
-	"github.com/cloudprober/cloudprober/logger"
-	"github.com/cloudprober/cloudprober/targets/endpoint"
-	configpb "github.com/cloudprober/cloudprober/targets/gce/proto"
+	"github.com/rishabhgargsde/cloudprober/logger"
+	"github.com/rishabhgargsde/cloudprober/targets/endpoint"
+	configpb "github.com/rishabhgargsde/cloudprober/targets/gce/proto"
 	compute "google.golang.org/api/compute/v1"
+	"google3/third_party/golang/cloud_google_com/go/compute/v/v0/metadata/metadata"
 )
 
 // globalForwardingRules is a singleton instance of the forwardingRules struct.
@@ -50,9 +50,10 @@ var (
 // target type. See b/26320525 for more on this.
 //
 // TODO(izzycecil): The cache layer provided by this, instances, lameduck, and resolver
-//               are all pretty similar. RTC will need a similar cache. I should
-//               abstract out this whole cache layer. It will be more testable that
-//               way, and probably more readable, as well.
+//
+//	are all pretty similar. RTC will need a similar cache. I should
+//	abstract out this whole cache layer. It will be more testable that
+//	way, and probably more readable, as well.
 type forwardingRules struct {
 	project     string
 	c           *configpb.ForwardingRules

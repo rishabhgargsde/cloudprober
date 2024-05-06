@@ -49,14 +49,15 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/cloudprober/cloudprober/internal/udpmessage"
-	"github.com/cloudprober/cloudprober/logger"
-	"github.com/cloudprober/cloudprober/metrics"
-	"github.com/cloudprober/cloudprober/probes/options"
-	"github.com/cloudprober/cloudprober/targets/endpoint"
+	"github.com/rishabhgargsde/cloudprober/common/message"
+	"github.com/rishabhgargsde/cloudprober/logger"
+	"github.com/rishabhgargsde/cloudprober/metrics"
+	"github.com/rishabhgargsde/cloudprober/probes/common/statskeeper"
+	"github.com/rishabhgargsde/cloudprober/probes/options"
+	"github.com/rishabhgargsde/cloudprober/targets/endpoint"
 
-	udpsrv "github.com/cloudprober/cloudprober/internal/servers/udp"
-	configpb "github.com/cloudprober/cloudprober/probes/udplistener/proto"
+	configpb "github.com/rishabhgargsde/cloudprober/probes/udplistener/proto"
+	udpsrv "github.com/rishabhgargsde/cloudprober/servers/udp"
 )
 
 const (
@@ -76,7 +77,7 @@ type Probe struct {
 
 	// map target name to flow state.
 	targets []endpoint.Endpoint
-	fsm     *udpmessage.FlowStateMap
+	fsm     *message.FlowStateMap
 
 	// Process and output results synchronization.
 	mu   sync.Mutex
@@ -172,7 +173,7 @@ func (p *Probe) Init(name string, opts *options.Options) error {
 	p.c = c
 	p.echoMode = p.c.GetType() == configpb.ProbeConf_ECHO
 
-	p.fsm = udpmessage.NewFlowStateMap()
+	p.fsm = message.NewFlowStateMap()
 
 	udpAddr := &net.UDPAddr{Port: int(p.c.GetPort())}
 	if p.opts.SourceIP != nil {
@@ -222,7 +223,7 @@ func (p *Probe) processMessage(buf []byte, rxTS time.Time, srcAddr *net.UDPAddr)
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	msg, err := udpmessage.NewMessage(buf)
+	msg, err := message.NewMessage(buf)
 	if err != nil {
 		p.errs.invalidMsgErrs[srcAddr.String()] = err.Error()
 		return
@@ -247,7 +248,7 @@ func (p *Probe) processMessage(buf []byte, rxTS time.Time, srcAddr *net.UDPAddr)
 }
 
 // outputResults writes results to the output channel.
-func (p *Probe) outputResults(expectedCt int64, stats chan<- *probeRunResult) {
+func (p *Probe) outputResults(expectedCt int64, stats chan<- statskeeper.ProbeResult) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	for _, r := range p.res {
@@ -255,12 +256,12 @@ func (p *Probe) outputResults(expectedCt int64, stats chan<- *probeRunResult) {
 		if delta > 0 {
 			r.total.IncBy(delta)
 		}
-		stats <- r
+		stats <- *r
 	}
 	p.initProbeRunResults()
 }
 
-func (p *Probe) outputLoop(ctx context.Context, stats chan<- *probeRunResult) {
+func (p *Probe) outputLoop(ctx context.Context, stats chan<- statskeeper.ProbeResult) {
 	// Use a ticker to control stats output and error logging.
 	// ticker should be a multiple of interval between pkts (i.e., p.opts.Interval).
 	pktsPerExportInterval := int64(p.opts.StatsExportInterval / p.opts.Interval)
@@ -347,7 +348,7 @@ func (p *Probe) recvLoop(ctx context.Context, echoChan chan<- *echoMsg) {
 }
 
 // probeLoop starts the necessary threads and waits for them to exit.
-func (p *Probe) probeLoop(ctx context.Context, resultsChan chan<- *probeRunResult) {
+func (p *Probe) probeLoop(ctx context.Context, resultsChan chan<- statskeeper.ProbeResult) {
 	var wg sync.WaitGroup
 
 	// Output Loop for metrics
@@ -372,51 +373,6 @@ func (p *Probe) probeLoop(ctx context.Context, resultsChan chan<- *probeRunResul
 	wg.Wait()
 }
 
-// statsKeeper manages and outputs probe results.
-// TODO: We should get rid of this function. For now, I've copied it from
-// common/statskeeper so that we can delete the common package.
-func (p *Probe) statsKeeper(ctx context.Context, ptype, name string, opts *options.Options, resultsChan <-chan *probeRunResult, dataChan chan<- *metrics.EventMetrics) {
-	targetMetrics := make(map[string]*metrics.EventMetrics)
-	exportTicker := time.NewTicker(opts.StatsExportInterval)
-	defer exportTicker.Stop()
-
-	for {
-		select {
-		case result := <-resultsChan:
-			// result is a ProbeResult
-			t := result.Target()
-			if targetMetrics[t] == nil {
-				targetMetrics[t] = result.Metrics()
-				continue
-			}
-			em := result.Metrics()
-			for _, k := range em.MetricsKeys() {
-				if targetMetrics[t].Metric(k) == nil {
-					targetMetrics[t].AddMetric(k, em.Metric(k))
-				} else {
-					if err := targetMetrics[t].Metric(k).Add(em.Metric(k)); err != nil {
-						opts.Logger.Errorf("Error adding metric %s for the target: %s. Err: %v", k, t, err)
-					}
-				}
-			}
-		case ts := <-exportTicker.C:
-			for _, t := range p.targets {
-				em := targetMetrics[t.Name]
-				if em != nil {
-					em.AddLabel("ptype", ptype)
-					em.AddLabel("probe", name)
-					em.AddLabel("dst", t.Name)
-					em.Timestamp = ts
-
-					opts.RecordMetrics(t, em.Clone(), dataChan)
-				}
-			}
-		case <-ctx.Done():
-			return
-		}
-	}
-}
-
 // Start starts and runs the probe indefinitely.
 func (p *Probe) Start(ctx context.Context, dataChan chan *metrics.EventMetrics) {
 	p.updateTargets()
@@ -427,9 +383,12 @@ func (p *Probe) Start(ctx context.Context, dataChan chan *metrics.EventMetrics) 
 	if resultsChLen < minResultsChLen {
 		resultsChLen = minResultsChLen
 	}
-	resultsChan := make(chan *probeRunResult, resultsChLen)
+	resultsChan := make(chan statskeeper.ProbeResult, resultsChLen)
+	targetsFunc := func() []endpoint.Endpoint {
+		return p.targets
+	}
 
-	go p.statsKeeper(ctx, "udp", p.name, p.opts, resultsChan, dataChan)
+	go statskeeper.StatsKeeper(ctx, "udp", p.name, p.opts, targetsFunc, resultsChan, dataChan)
 
 	// probeLoop runs forever and returns only when the probe has to exit.
 	// So, it is safe to cleanup (in the "Start" function) once probeLoop returns.

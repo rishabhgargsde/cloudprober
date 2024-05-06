@@ -24,12 +24,12 @@ import (
 	"sync"
 	"time"
 
-	"github.com/cloudprober/cloudprober/logger"
-	"github.com/cloudprober/cloudprober/metrics"
-	"github.com/cloudprober/cloudprober/surfacers/internal/common/compress"
-	"github.com/cloudprober/cloudprober/surfacers/internal/common/options"
+	"github.com/rishabhgargsde/cloudprober/logger"
+	"github.com/rishabhgargsde/cloudprober/metrics"
+	"github.com/rishabhgargsde/cloudprober/surfacers/internal/common/compress"
+	"github.com/rishabhgargsde/cloudprober/surfacers/internal/common/options"
 
-	configpb "github.com/cloudprober/cloudprober/surfacers/internal/file/proto"
+	configpb "github.com/rishabhgargsde/cloudprober/surfacers/internal/file/proto"
 )
 
 // Surfacer structures for writing onto a GCE instance's serial port. Keeps
@@ -72,7 +72,7 @@ func (s *Surfacer) processInput(ctx context.Context) {
 			emStr.WriteByte(' ')
 			emStr.WriteString(strconv.FormatInt(s.id, 10))
 			emStr.WriteByte(' ')
-			emStr.WriteString(em.String(metrics.StringerIgnoreMetric(s.opts.IgnoreMetric)))
+			emStr.WriteString(em.String())
 			s.id++
 
 			// If compression is not enabled, write line to file and continue.

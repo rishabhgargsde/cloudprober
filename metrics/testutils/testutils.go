@@ -22,7 +22,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/cloudprober/cloudprober/metrics"
+	"github.com/rishabhgargsde/cloudprober/metrics"
 )
 
 // MetricsFromChannel reads metrics.EventMetrics from dataChannel with a timeout
@@ -61,6 +61,7 @@ func LabelsMapByTarget(ems []*metrics.EventMetrics) map[string]map[string]string
 	return lmap
 }
 
+// EventMetricsByTargetMetric rearranges a list of metrics into a map of map.
 func EventMetricsByTargetMetric(ems []*metrics.EventMetrics) map[string]map[string][]*metrics.EventMetrics {
 	emMap := make(map[string]map[string][]*metrics.EventMetrics)
 	for _, em := range ems {

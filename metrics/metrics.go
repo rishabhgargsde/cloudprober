@@ -16,7 +16,7 @@
 package metrics
 
 import (
-	"fmt"
+	"errors"
 	"strconv"
 	"strings"
 )
@@ -81,5 +81,5 @@ func ParseValueFromString(val string) (Value, error) {
 		return distVal, nil
 	}
 
-	return nil, fmt.Errorf("unknown value type: %s", val)
+	return nil, errors.New("unknown value type")
 }

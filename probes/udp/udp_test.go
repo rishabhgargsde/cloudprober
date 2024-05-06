@@ -27,14 +27,15 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cloudprober/cloudprober/common/iputils"
-	"github.com/cloudprober/cloudprober/internal/sysvars"
-	"github.com/cloudprober/cloudprober/logger"
-	"github.com/cloudprober/cloudprober/metrics"
-	"github.com/cloudprober/cloudprober/probes/options"
-	configpb "github.com/cloudprober/cloudprober/probes/udp/proto"
-	"github.com/cloudprober/cloudprober/targets"
-	"github.com/stretchr/testify/assert"
+	"google3/third_party/golang/testify/assert/assert"
+
+	"github.com/rishabhgargsde/cloudprober/common/iputils"
+	"github.com/rishabhgargsde/cloudprober/logger"
+	"github.com/rishabhgargsde/cloudprober/metrics"
+	"github.com/rishabhgargsde/cloudprober/probes/options"
+	configpb "github.com/rishabhgargsde/cloudprober/probes/udp/proto"
+	"github.com/rishabhgargsde/cloudprober/sysvars"
+	"github.com/rishabhgargsde/cloudprober/targets"
 	"google.golang.org/protobuf/proto"
 )
 

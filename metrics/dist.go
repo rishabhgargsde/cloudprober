@@ -24,7 +24,7 @@ import (
 	"strings"
 	"sync"
 
-	distpb "github.com/cloudprober/cloudprober/metrics/proto"
+	distpb "github.com/rishabhgargsde/cloudprober/metrics/proto"
 	"google.golang.org/api/googleapi"
 	monitoring "google.golang.org/api/monitoring/v3"
 )
@@ -291,7 +291,7 @@ func ParseDistFromString(str string) (*Distribution, error) {
 	return d, nil
 }
 
-// DistributionData stuct, along with Data() function, provides a way to
+// DistributionData struct, along with Data() function, provides a way to
 // readily share the Distribution data with other packages.
 type DistributionData struct {
 	LowerBounds  []float64 // bucket lower bounds

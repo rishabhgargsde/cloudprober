@@ -20,16 +20,16 @@ package main
 import (
 	"context"
 	"fmt"
-	"log"
 	"time"
 
 	"flag"
 
-	"github.com/cloudprober/cloudprober/metrics"
-	"github.com/cloudprober/cloudprober/probes/options"
-	"github.com/cloudprober/cloudprober/probes/tcp"
-	configpb "github.com/cloudprober/cloudprober/probes/tcp/proto"
-	"github.com/cloudprober/cloudprober/targets"
+	"github.com/golang/glog"
+	"github.com/rishabhgargsde/cloudprober/metrics"
+	"github.com/rishabhgargsde/cloudprober/probes/options"
+	"github.com/rishabhgargsde/cloudprober/probes/tcp"
+	configpb "github.com/rishabhgargsde/cloudprober/probes/tcp/proto"
+	"github.com/rishabhgargsde/cloudprober/targets"
 )
 
 var (
@@ -50,7 +50,7 @@ func main() {
 
 	tp := &tcp.Probe{}
 	if err := tp.Init("tcp_test", opts); err != nil {
-		log.Fatalf("Error in initializing probe %s from the config. Err: %v", "http_test", err)
+		glog.Exitf("Error in initializing probe %s from the config. Err: %v", "http_test", err)
 	}
 	dataChan := make(chan *metrics.EventMetrics, 1000)
 	go tp.Start(context.Background(), dataChan)

@@ -21,18 +21,17 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
-	"slices"
 	"time"
 
-	"github.com/cloudprober/cloudprober/common/iputils"
-	"github.com/cloudprober/cloudprober/internal/alerting"
-	"github.com/cloudprober/cloudprober/internal/validators"
-	"github.com/cloudprober/cloudprober/logger"
-	"github.com/cloudprober/cloudprober/metrics"
-	configpb "github.com/cloudprober/cloudprober/probes/proto"
-	"github.com/cloudprober/cloudprober/targets"
-	"github.com/cloudprober/cloudprober/targets/endpoint"
-	targetspb "github.com/cloudprober/cloudprober/targets/proto"
+	"github.com/rishabhgargsde/cloudprober/common/iputils"
+	"github.com/rishabhgargsde/cloudprober/logger"
+	"github.com/rishabhgargsde/cloudprober/metrics"
+	"github.com/rishabhgargsde/cloudprober/probes/alerting"
+	configpb "github.com/rishabhgargsde/cloudprober/probes/proto"
+	"github.com/rishabhgargsde/cloudprober/targets"
+	"github.com/rishabhgargsde/cloudprober/targets/endpoint"
+	targetspb "github.com/rishabhgargsde/cloudprober/targets/proto"
+	"github.com/rishabhgargsde/cloudprober/validators"
 )
 
 // Options encapsulates common probe options.
@@ -48,17 +47,11 @@ type Options struct {
 	SourceIP            net.IP
 	IPVersion           int
 	StatsExportInterval time.Duration
+	LogMetrics          func(*metrics.EventMetrics)
 	AdditionalLabels    []*AdditionalLabel
 	Schedule            *Schedule
 	NegativeTest        bool
 	AlertHandlers       []*alerting.AlertHandler
-	logMetricsOverride  func(*metrics.EventMetrics)
-}
-
-func (opts *Options) LogMetrics(em *metrics.EventMetrics) {
-	if opts.logMetricsOverride != nil {
-		opts.logMetricsOverride(em)
-	}
 }
 
 const defaultStatsExtportIntv = 10 * time.Second
@@ -176,19 +169,13 @@ func BuildProbeOptions(p *configpb.ProbeDef, ldLister endpoint.Lister, globalTar
 	}
 
 	if p.GetTargets() == nil {
-		targetsNotRequired := []configpb.ProbeDef_Type{
-			configpb.ProbeDef_USER_DEFINED,
-			configpb.ProbeDef_EXTERNAL,
-			configpb.ProbeDef_EXTENSION,
-			configpb.ProbeDef_BROWSER,
-		}
-		if !slices.Contains(targetsNotRequired, p.GetType()) {
+		if p.GetType() != configpb.ProbeDef_USER_DEFINED && p.GetType() != configpb.ProbeDef_EXTERNAL && p.GetType() != configpb.ProbeDef_EXTENSION {
 			return nil, fmt.Errorf("targets requied for probe type: %s", p.GetType().String())
-		} else {
-			p.Targets = &targetspb.TargetsDef{
-				Type: &targetspb.TargetsDef_DummyTargets{},
-			}
 		}
+		p.Targets = &targetspb.TargetsDef{
+			Type: &targetspb.TargetsDef_DummyTargets{},
+		}
+
 	}
 
 	if opts.Targets, err = targets.New(p.GetTargets(), ldLister, globalTargetsOpts, l, opts.Logger); err != nil {
@@ -252,9 +239,13 @@ func BuildProbeOptions(p *configpb.ProbeDef, ldLister endpoint.Lister, globalTar
 		}
 	}
 
-	if p.GetDebugOptions().GetLogMetrics() {
-		opts.logMetricsOverride = func(em *metrics.EventMetrics) {
-			opts.Logger.Info(em.String())
+	if !p.GetDebugOptions().GetLogMetrics() {
+		opts.LogMetrics = func(em *metrics.EventMetrics) {}
+	} else {
+		opts.LogMetrics = func(em *metrics.EventMetrics) {
+			if opts.Logger != nil {
+				opts.Logger.Info(em.String())
+			}
 		}
 	}
 
@@ -280,10 +271,6 @@ func DefaultOptions() *Options {
 	return opts
 }
 
-func (opts *Options) IsScheduled() bool {
-	return opts.Schedule.isIn(time.Now())
-}
-
 type recordOptions struct {
 	NoAlert bool
 }
@@ -296,25 +283,24 @@ func WithNoAlert() RecordOptions {
 	}
 }
 
-// RecordMetrics updates EventMetrics with additional labels and pushes it to
-// the data channel and alert handlers. It also logs EventMetrics if configured
-// to do so in the options.
-// Note: RecordMetrics doesn't clone the provided EventMetrics. It expects the
-// caller to not modify it after calling this function.
-func (opts *Options) RecordMetrics(ep endpoint.Endpoint, em *metrics.EventMetrics, dataChan chan<- *metrics.EventMetrics, ropts ...RecordOptions) {
-	ro := &recordOptions{}
-	for _, ropt := range ropts {
-		ropt(ro)
-	}
+// IsScheduled returns true if the probe is scheduled.
+func (opts *Options) IsScheduled() bool {
+	return opts.Schedule.isIn(time.Now())
+}
 
+func (opts *Options) RecordMetrics(ep endpoint.Endpoint, em *metrics.EventMetrics, dataChan chan<- *metrics.EventMetrics, ropts ...RecordOptions) {
 	em.LatencyUnit = opts.LatencyUnit
 	for _, al := range opts.AdditionalLabels {
 		em.AddLabel(al.KeyValueForTarget(ep))
 	}
 
 	opts.LogMetrics(em)
-	dataChan <- em
+	dataChan <- em.Clone()
 
+	ro := &recordOptions{}
+	for _, ropt := range ropts {
+		ropt(ro)
+	}
 	if !ro.NoAlert {
 		for _, ah := range opts.AlertHandlers {
 			ah.Record(ep, em)

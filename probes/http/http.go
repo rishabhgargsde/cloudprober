@@ -22,28 +22,26 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math/rand"
 	"net"
 	"net/http"
 	"net/http/httptrace"
 	"net/url"
-	"os"
 	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
-	"github.com/cloudprober/cloudprober/internal/httpreq"
-	"github.com/cloudprober/cloudprober/internal/oauth"
-	"github.com/cloudprober/cloudprober/internal/tlsconfig"
-	"github.com/cloudprober/cloudprober/internal/validators"
-	"github.com/cloudprober/cloudprober/logger"
-	"github.com/cloudprober/cloudprober/metrics"
-	"github.com/cloudprober/cloudprober/metrics/payload"
-	"github.com/cloudprober/cloudprober/probes/common/sched"
-	configpb "github.com/cloudprober/cloudprober/probes/http/proto"
-	"github.com/cloudprober/cloudprober/probes/options"
-	"github.com/cloudprober/cloudprober/targets/endpoint"
+	"github.com/rishabhgargsde/cloudprober/common/httputils"
+	"github.com/rishabhgargsde/cloudprober/common/oauth"
+	"github.com/rishabhgargsde/cloudprober/common/tlsconfig"
+	"github.com/rishabhgargsde/cloudprober/logger"
+	"github.com/rishabhgargsde/cloudprober/metrics"
+	configpb "github.com/rishabhgargsde/cloudprober/probes/http/proto"
+	"github.com/rishabhgargsde/cloudprober/probes/options"
+	"github.com/rishabhgargsde/cloudprober/targets/endpoint"
+	"github.com/rishabhgargsde/cloudprober/validators"
 	"golang.org/x/oauth2"
 )
 
@@ -69,13 +67,11 @@ type Probe struct {
 	redirectFunc  func(req *http.Request, via []*http.Request) error
 
 	// book-keeping params
-	targets []endpoint.Endpoint
-	method  string
-	url     string
-	oauthTS oauth2.TokenSource
-
-	responseParser *payload.Parser
-	dataChan       chan *metrics.EventMetrics
+	targets  []endpoint.Endpoint
+	protocol string
+	method   string
+	url      string
+	oauthTS  oauth2.TokenSource
 
 	// How often to resolve targets (in probe counts), it's the minimum of
 	targetsUpdateInterval time.Duration
@@ -85,11 +81,11 @@ type Probe struct {
 	// (runCnt % statsExportFrequency) == 0
 	statsExportFrequency int64
 
-	requestBody *httpreq.RequestBody
-}
+	// Cancel functions for per-target probe loop
+	cancelFuncs map[string]context.CancelFunc
+	waitGroup   sync.WaitGroup
 
-type latencyDetails struct {
-	dnsLatency, connectLatency, tlsLatency, reqWriteLatency, firstByteLatency metrics.LatencyValue
+	requestBody *httputils.RequestBody
 }
 
 type probeResult struct {
@@ -99,15 +95,11 @@ type probeResult struct {
 	respCodes                    *metrics.Map[int64]
 	respBodies                   *metrics.Map[int64]
 	validationFailure            *metrics.Map[int64]
-	latencyBreakdown             *latencyDetails
 	sslEarliestExpirationSeconds int64
 }
 
 func (p *Probe) getTransport() (*http.Transport, error) {
-	transport := &http.Transport{
-		Proxy:             http.ProxyFromEnvironment,
-		ForceAttemptHTTP2: true,
-	}
+	transport := http.DefaultTransport.(*http.Transport).Clone()
 	dialer := &net.Dialer{
 		Timeout:   p.opts.Timeout,
 		KeepAlive: 30 * time.Second, // TCP keep-alive
@@ -127,13 +119,6 @@ func (p *Probe) getTransport() (*http.Transport, error) {
 			return nil, fmt.Errorf("error parsing proxy URL (%s): %v", p.c.GetProxyUrl(), err)
 		}
 		transport.Proxy = http.ProxyURL(url)
-
-		if len(p.c.GetProxyConnectHeader()) > 0 && transport.ProxyConnectHeader == nil {
-			transport.ProxyConnectHeader = make(http.Header)
-		}
-		for k, v := range p.c.GetProxyConnectHeader() {
-			transport.ProxyConnectHeader.Add(k, v)
-		}
 	}
 
 	if p.c.GetDisableCertValidation() || p.c.GetTlsConfig() != nil {
@@ -168,8 +153,6 @@ func (p *Probe) getTransport() (*http.Transport, error) {
 	if p.c.GetDisableHttp2() {
 		// HTTP/2 is enabled by default if server supports it. Setting
 		// TLSNextProto to an empty dict is the only way to disable it.
-		// This only works if transport hasn't been previously cloned.
-		// See https://github.com/cloudprober/cloudprober/issues/872
 		transport.TLSNextProto = make(map[string]func(string, *tls.Conn) http.RoundTripper)
 		transport.ForceAttemptHTTP2 = false
 	}
@@ -201,6 +184,7 @@ func (p *Probe) Init(name string, opts *options.Options) error {
 			totalDuration, p.opts.Interval)
 	}
 
+	p.protocol = strings.ToLower(p.c.GetProtocol().String())
 	p.method = p.c.GetMethod().String()
 
 	p.url = p.c.GetRelativeUrl()
@@ -208,15 +192,7 @@ func (p *Probe) Init(name string, opts *options.Options) error {
 		return fmt.Errorf("invalid relative URL: %s, must begin with '/'", p.url)
 	}
 
-	body := p.c.GetBody()
-	if len(body) == 0 && p.c.GetBodyFile() != "" {
-		b, err := os.ReadFile(p.c.GetBodyFile())
-		if err != nil {
-			return fmt.Errorf("error reading body file: %v", err)
-		}
-		body = []string{string(b)}
-	}
-	p.requestBody = httpreq.NewRequestBody(body...)
+	p.requestBody = httputils.NewRequestBody(p.c.GetBody()...)
 
 	if p.c.GetOauthConfig() != nil {
 		oauthTS, err := oauth.TokenSourceFromConfig(p.c.GetOauthConfig(), p.l)
@@ -238,14 +214,8 @@ func (p *Probe) Init(name string, opts *options.Options) error {
 			if len(via) >= int(p.c.GetMaxRedirects()) {
 				return http.ErrUseLastResponse
 			}
-			return nil
-		}
-	}
 
-	if p.c.GetResponseMetricsOptions() != nil {
-		p.responseParser, err = payload.NewParser(p.c.GetResponseMetricsOptions(), p.l)
-		if err != nil {
-			return fmt.Errorf("error initializing response metrics parser: %v", err)
+			return nil
 		}
 	}
 
@@ -255,6 +225,7 @@ func (p *Probe) Init(name string, opts *options.Options) error {
 	}
 
 	p.targets = p.opts.Targets.ListEndpoints()
+	p.cancelFuncs = make(map[string]context.CancelFunc, len(p.targets))
 
 	p.targetsUpdateInterval = DefaultTargetsUpdateInterval
 	// There is no point refreshing targets before probe interval.
@@ -278,65 +249,26 @@ func isClientTimeout(err error) bool {
 	return false
 }
 
-func (p *Probe) addLatency(latency metrics.LatencyValue, start time.Time) {
-	latency.AddFloat64(time.Since(start).Seconds() / p.opts.LatencyUnit.Seconds())
-}
-
 // httpRequest executes an HTTP request and updates the provided result struct.
-func (p *Probe) doHTTPRequest(req *http.Request, client *http.Client, target endpoint.Endpoint, result *probeResult, resultMu *sync.Mutex) {
+func (p *Probe) doHTTPRequest(req *http.Request, client *http.Client, targetName string, result *probeResult, resultMu *sync.Mutex) {
 	req = p.prepareRequest(req)
 
-	start := time.Now()
-
-	trace := &httptrace.ClientTrace{}
-
-	if lb := result.latencyBreakdown; lb != nil {
-
-		var dnsStart, connectStart, tlsStart, writeStart, firstbyteStart time.Time
-
-		if lb.dnsLatency != nil {
-			trace.DNSStart = func(_ httptrace.DNSStartInfo) { dnsStart = time.Now() }
-			trace.DNSDone = func(_ httptrace.DNSDoneInfo) { p.addLatency(lb.dnsLatency, dnsStart) }
-		}
-		if lb.connectLatency != nil {
-			trace.ConnectStart = func(_, _ string) { connectStart = time.Now() }
-			trace.ConnectDone = func(_, _ string, _ error) { p.addLatency(lb.connectLatency, connectStart) }
-		}
-		if lb.tlsLatency != nil {
-			trace.TLSHandshakeStart = func() { tlsStart = time.Now() }
-			trace.TLSHandshakeDone = func(_ tls.ConnectionState, _ error) { p.addLatency(lb.tlsLatency, tlsStart) }
-		}
-		if lb.reqWriteLatency != nil {
-			trace.WroteHeaders = func() { writeStart = time.Now() }
-			trace.WroteRequest = func(_ httptrace.WroteRequestInfo) { p.addLatency(lb.reqWriteLatency, writeStart) }
-		}
-		if lb.firstByteLatency != nil {
-			trace.GotConn = func(_ httptrace.GotConnInfo) { firstbyteStart = time.Now() }
-			trace.GotFirstResponseByte = func() { p.addLatency(lb.firstByteLatency, firstbyteStart) }
-		}
-	}
-
 	var connEvent atomic.Int32
-
 	if p.c.GetKeepAlive() {
-		oldConnectDone := trace.ConnectDone
-		trace.ConnectDone = func(network, addr string, err error) {
-			connEvent.Add(1)
-			if oldConnectDone != nil {
-				oldConnectDone(network, addr, err)
-			}
-			if err != nil {
-				p.l.Warning("Error establishing a new connection to: ", addr, ". Err: ", err.Error())
-				return
-			}
-			p.l.Info("Established a new connection to: ", addr)
+		trace := &httptrace.ClientTrace{
+			ConnectDone: func(_, addr string, err error) {
+				connEvent.Add(1)
+				if err != nil {
+					p.l.Warning("Error establishing a new connection to: ", addr, ". Err: ", err.Error())
+					return
+				}
+				p.l.Info("Established a new connection to: ", addr)
+			},
 		}
-	}
-
-	if trace != nil {
 		req = req.WithContext(httptrace.WithClientTrace(req.Context(), trace))
 	}
 
+	start := time.Now()
 	resp, err := client.Do(req)
 	latency := time.Since(start)
 
@@ -351,21 +283,21 @@ func (p *Probe) doHTTPRequest(req *http.Request, client *http.Client, target end
 
 	if err != nil {
 		if isClientTimeout(err) {
-			p.l.WarningAttrs(err.Error(), slog.String("target", target.Name), slog.String("url", req.URL.String()))
+			p.l.WarningAttrs(err.Error(), slog.String("target", targetName), slog.String("url", req.URL.String()))
 			result.timeouts++
 			return
 		}
-		p.l.WarningAttrs(err.Error(), slog.String("target", target.Name), slog.String("url", req.URL.String()))
+		p.l.WarningAttrs(err.Error(), slog.String("target", targetName), slog.String("url", req.URL.String()))
 		return
 	}
 
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
-		p.l.WarningAttrs(err.Error(), slog.String("target", target.Name), slog.String("url", req.URL.String()))
+		p.l.WarningAttrs(err.Error(), slog.String("target", targetName), slog.String("url", req.URL.String()))
 		return
 	}
 
-	p.l.Debug("Target:", target.Name, ", URL:", req.URL.String(), ", response: ", string(respBody))
+	p.l.Debug("Target:", targetName, ", URL:", req.URL.String(), ", response: ", string(respBody))
 
 	// Calling Body.Close() allows the TCP connection to be reused.
 	resp.Body.Close()
@@ -390,7 +322,7 @@ func (p *Probe) doHTTPRequest(req *http.Request, client *http.Client, target end
 		// If any validation failed, return now, leaving the success and latency
 		// counters unchanged.
 		if len(failedValidations) > 0 {
-			p.l.Debug("Target:", target.Name, ", URL:", req.URL.String(), ", http.doHTTPRequest: failed validations: ", strings.Join(failedValidations, ","))
+			p.l.Debug("Target:", targetName, ", URL:", req.URL.String(), ", http.doHTTPRequest: failed validations: ", strings.Join(failedValidations, ","))
 			return
 		}
 	}
@@ -400,43 +332,6 @@ func (p *Probe) doHTTPRequest(req *http.Request, client *http.Client, target end
 	if result.respBodies != nil && len(respBody) <= maxResponseSizeForMetrics {
 		result.respBodies.IncKey(string(respBody))
 	}
-
-	if p.c.GetResponseMetricsOptions() != nil {
-		for _, em := range p.responseParser.PayloadMetrics(&payload.Input{Response: resp, Text: respBody}, target.Dst()) {
-			em.AddLabel("ptype", "http").AddLabel("probe", p.name).AddLabel("dst", target.Dst())
-			p.opts.RecordMetrics(target, em, p.dataChan, options.WithNoAlert())
-		}
-	}
-}
-
-func (p *Probe) parseLatencyBreakdown(baseLatencyValue metrics.LatencyValue) *latencyDetails {
-	if len(p.c.GetLatencyBreakdown()) == 0 {
-		return nil
-	}
-	lbMap := make(map[configpb.ProbeConf_LatencyBreakdown]bool)
-	for _, l := range p.c.GetLatencyBreakdown() {
-		lbMap[l] = true
-	}
-
-	all := lbMap[configpb.ProbeConf_ALL_STAGES]
-
-	ld := &latencyDetails{}
-	if all || lbMap[configpb.ProbeConf_DNS_LATENCY] {
-		ld.dnsLatency = baseLatencyValue.Clone().(metrics.LatencyValue)
-	}
-	if all || lbMap[configpb.ProbeConf_CONNECT_LATENCY] {
-		ld.connectLatency = baseLatencyValue.Clone().(metrics.LatencyValue)
-	}
-	if all || lbMap[configpb.ProbeConf_TLS_HANDSHAKE_LATENCY] {
-		ld.tlsLatency = baseLatencyValue.Clone().(metrics.LatencyValue)
-	}
-	if all || lbMap[configpb.ProbeConf_REQ_WRITE_LATENCY] {
-		ld.reqWriteLatency = baseLatencyValue.Clone().(metrics.LatencyValue)
-	}
-	if all || lbMap[configpb.ProbeConf_FIRST_BYTE_LATENCY] {
-		ld.firstByteLatency = baseLatencyValue.Clone().(metrics.LatencyValue)
-	}
-	return ld
 }
 
 func (p *Probe) runProbe(ctx context.Context, target endpoint.Endpoint, clients []*http.Client, req *http.Request, result *probeResult) {
@@ -444,7 +339,7 @@ func (p *Probe) runProbe(ctx context.Context, target endpoint.Endpoint, clients 
 	defer cancelReqCtx()
 
 	if p.c.GetRequestsPerProbe() == 1 {
-		p.doHTTPRequest(req.WithContext(reqCtx), clients[0], target, result, nil)
+		p.doHTTPRequest(req.WithContext(reqCtx), clients[0], target.Name, result, nil)
 		return
 	}
 
@@ -457,12 +352,12 @@ func (p *Probe) runProbe(ctx context.Context, target endpoint.Endpoint, clients 
 	wg := sync.WaitGroup{}
 	for numReq := 0; numReq < int(p.c.GetRequestsPerProbe()); numReq++ {
 		wg.Add(1)
-		go func(req *http.Request, numReq int, target endpoint.Endpoint, result *probeResult) {
+		go func(req *http.Request, numReq int, targetName string, result *probeResult) {
 			defer wg.Done()
 
 			time.Sleep(time.Duration(numReq*int(p.c.GetRequestsIntervalMsec())) * time.Millisecond)
-			p.doHTTPRequest(req.WithContext(reqCtx), clients[numReq], target, result, &resultMu)
-		}(req, numReq, target, result)
+			p.doHTTPRequest(req.WithContext(reqCtx), clients[numReq], targetName, result, &resultMu)
+		}(req, numReq, target.Name, result)
 	}
 	wg.Wait()
 }
@@ -482,8 +377,6 @@ func (p *Probe) newResult() *probeResult {
 	} else {
 		result.latency = metrics.NewFloat(0)
 	}
-
-	result.latencyBreakdown = p.parseLatencyBreakdown(result.latency)
 
 	if p.c.GetExportResponseAsMetrics() {
 		result.respBodies = metrics.NewMap("resp")
@@ -510,24 +403,6 @@ func (p *Probe) exportMetrics(ts time.Time, result *probeResult, target endpoint
 
 	if result.validationFailure != nil {
 		em.AddMetric("validation_failure", result.validationFailure)
-	}
-
-	if result.latencyBreakdown != nil {
-		if dl := result.latencyBreakdown.dnsLatency; dl != nil {
-			em.AddMetric("dns_latency", dl.Clone())
-		}
-		if cl := result.latencyBreakdown.connectLatency; cl != nil {
-			em.AddMetric("connect_latency", cl.Clone())
-		}
-		if tl := result.latencyBreakdown.tlsLatency; tl != nil {
-			em.AddMetric("tls_handshake_latency", tl.Clone())
-		}
-		if rwl := result.latencyBreakdown.reqWriteLatency; rwl != nil {
-			em.AddMetric("req_write_latency", rwl.Clone())
-		}
-		if fbl := result.latencyBreakdown.firstByteLatency; fbl != nil {
-			em.AddMetric("first_byte_latency", fbl.Clone())
-		}
 	}
 
 	em.AddLabel("ptype", "http").AddLabel("probe", p.name).AddLabel("dst", target.Name)
@@ -558,19 +433,14 @@ func (p *Probe) clientsForTarget(target endpoint.Endpoint) []*http.Client {
 		// RoundTripper implementation.
 		if ht, ok := p.baseTransport.(*http.Transport); ok {
 			t := ht.Clone()
-
-			// If we're resolving target first, url.Host will be an IP address.
-			// In that case, we need to set ServerName in TLSClientConfig to
-			// the actual hostname.
-			if p.schemeForTarget(target) == "https" && p.resolveFirst(target) {
+			if p.c.GetProtocol() == configpb.ProbeConf_HTTPS && p.resolveFirst(target) {
 				if t.TLSClientConfig == nil {
 					t.TLSClientConfig = &tls.Config{}
 				}
 				if t.TLSClientConfig.ServerName == "" {
-					t.TLSClientConfig.ServerName = hostForTarget(target)
+					t.TLSClientConfig.ServerName = urlHostForTarget(target)
 				}
 			}
-
 			clients[i] = &http.Client{Transport: t}
 		} else {
 			clients[i] = &http.Client{Transport: p.baseTransport}
@@ -595,10 +465,9 @@ func (p *Probe) startForTarget(ctx context.Context, target endpoint.Endpoint, da
 	clients := p.clientsForTarget(target)
 	for ts := time.Now(); true; ts = <-ticker.C {
 		// Don't run another probe if context is canceled already.
-		if sched.CtxDone(ctx) {
+		if ctxDone(ctx) {
 			return
 		}
-
 		if !p.opts.IsScheduled() {
 			continue
 		}
@@ -608,8 +477,6 @@ func (p *Probe) startForTarget(ctx context.Context, target endpoint.Endpoint, da
 		// creation gets retried at a regular interval (stats export interval).
 		if req != nil {
 			p.runProbe(ctx, target, clients, req, result)
-		} else {
-			result.total += int64(p.c.GetRequestsPerProbe())
 		}
 
 		// Export stats if it's the time to do so.
@@ -626,16 +493,138 @@ func (p *Probe) startForTarget(ctx context.Context, target endpoint.Endpoint, da
 	}
 }
 
-// Start starts and runs the probe indefinitely.
-func (p *Probe) Start(ctx context.Context, dataChan chan *metrics.EventMetrics) {
-	p.dataChan = dataChan
+func (p *Probe) gapBetweenTargets() time.Duration {
+	interTargetGap := time.Duration(p.c.GetIntervalBetweenTargetsMsec()) * time.Millisecond
 
-	s := &sched.Scheduler{
-		ProbeName:      p.name,
-		DataChan:       dataChan,
-		Opts:           p.opts,
-		StartForTarget: func(ctx context.Context, target endpoint.Endpoint) { p.startForTarget(ctx, target, dataChan) },
+	// If not configured by user, determine based on probe interval and number of
+	// targets.
+	if interTargetGap == 0 && len(p.targets) != 0 {
+		// Use 1/10th of the probe interval to spread out target groroutines.
+		interTargetGap = p.opts.Interval / time.Duration(10*len(p.targets))
 	}
 
-	s.UpdateTargetsAndStartProbes(ctx)
+	return interTargetGap
+}
+
+// updateTargetsAndStartProbes refreshes targets and starts probe loop for
+// new targets and cancels probe loops for targets that are no longer active.
+// Note that this function is not concurrency safe. It is never called
+// concurrently by Start().
+func (p *Probe) updateTargetsAndStartProbes(ctx context.Context, dataChan chan *metrics.EventMetrics) {
+	p.targets = p.opts.Targets.ListEndpoints()
+
+	p.l.Debugf("Probe(%s) got %d targets", p.name, len(p.targets))
+
+	// updatedTargets is used only for logging.
+	updatedTargets := make(map[string]string)
+	defer func() {
+		if len(updatedTargets) > 0 {
+			p.l.Infof("Probe(%s) targets updated: %v", p.name, updatedTargets)
+		}
+	}()
+
+	activeTargets := make(map[string]endpoint.Endpoint)
+	for _, target := range p.targets {
+		key := target.Key()
+		activeTargets[key] = target
+	}
+
+	// Stop probing for deleted targets by invoking cancelFunc.
+	for targetKey, cancelF := range p.cancelFuncs {
+		if _, ok := activeTargets[targetKey]; ok {
+			continue
+		}
+		cancelF()
+		updatedTargets[targetKey] = "DELETE"
+		delete(p.cancelFuncs, targetKey)
+	}
+
+	gapBetweenTargets := p.gapBetweenTargets()
+	var startWaitTime time.Duration
+
+	// Start probe loop for new targets.
+	for key, target := range activeTargets {
+		// This target is already initialized.
+		if _, ok := p.cancelFuncs[key]; ok {
+			continue
+		}
+		updatedTargets[key] = "ADD"
+
+		probeCtx, cancelF := context.WithCancel(ctx)
+		p.waitGroup.Add(1)
+
+		go func(target endpoint.Endpoint, waitTime time.Duration) {
+			defer p.waitGroup.Done()
+
+			// To evenly spread out target probes, wait for a randomized
+			// duration before starting the target go-routine.
+			if waitTime > 0 {
+				// For random padding using 1/10th of the gap.
+				jitterMaxUsec := gapBetweenTargets.Microseconds() / 10
+				// Make sure we don't pass 0 to rand.Int63n.
+				if jitterMaxUsec <= 0 {
+					jitterMaxUsec = 1
+				}
+				time.Sleep(waitTime + time.Duration(rand.Int63n(jitterMaxUsec))*time.Microsecond)
+			}
+
+			p.startForTarget(probeCtx, target, dataChan)
+		}(target, startWaitTime)
+
+		startWaitTime += gapBetweenTargets
+
+		p.cancelFuncs[key] = cancelF
+	}
+}
+
+func ctxDone(ctx context.Context) bool {
+	select {
+	case <-ctx.Done():
+		return true
+	default:
+		return false
+	}
+}
+
+// wait waits for child go-routines (one per target) to clean up.
+func (p *Probe) wait() {
+	p.waitGroup.Wait()
+}
+
+// Start starts and runs the probe indefinitely.
+func (p *Probe) Start(ctx context.Context, dataChan chan *metrics.EventMetrics) {
+	defer p.wait()
+
+	p.updateTargetsAndStartProbes(ctx, dataChan)
+
+	// Do more frequent listing of targets until we get a non-zero list of
+	// targets.
+	initialRefreshInterval := p.opts.Interval
+	// Don't wait too long if p.opts.Interval is large.
+	if initialRefreshInterval > time.Second {
+		initialRefreshInterval = time.Second
+	}
+
+	for {
+		if ctxDone(ctx) {
+			return
+		}
+		if len(p.targets) != 0 {
+			break
+		}
+		p.updateTargetsAndStartProbes(ctx, dataChan)
+		time.Sleep(initialRefreshInterval)
+	}
+
+	targetsUpdateTicker := time.NewTicker(p.targetsUpdateInterval)
+	defer targetsUpdateTicker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-targetsUpdateTicker.C:
+			p.updateTargetsAndStartProbes(ctx, dataChan)
+		}
+	}
 }

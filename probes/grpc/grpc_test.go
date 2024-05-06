@@ -19,32 +19,31 @@ import (
 	"errors"
 	"fmt"
 	"net"
-	"os"
-	"runtime"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
-	pb "github.com/cloudprober/cloudprober/internal/servers/grpc/proto"
-	spb "github.com/cloudprober/cloudprober/internal/servers/grpc/proto"
-	tlsconfigpb "github.com/cloudprober/cloudprober/internal/tlsconfig/proto"
-	"github.com/cloudprober/cloudprober/internal/validators"
-	validators_configpb "github.com/cloudprober/cloudprober/internal/validators/proto"
-	"github.com/cloudprober/cloudprober/logger"
-	"github.com/cloudprober/cloudprober/metrics"
-	"github.com/cloudprober/cloudprober/metrics/testutils"
-	configpb "github.com/cloudprober/cloudprober/probes/grpc/proto"
-	"github.com/cloudprober/cloudprober/probes/options"
-	"github.com/cloudprober/cloudprober/targets"
-	"github.com/cloudprober/cloudprober/targets/endpoint"
-	"github.com/cloudprober/cloudprober/targets/resolver"
+	tlsconfigpb "github.com/rishabhgargsde/cloudprober/common/tlsconfig/proto"
+	"github.com/rishabhgargsde/cloudprober/logger"
+	"github.com/rishabhgargsde/cloudprober/metrics"
+	"github.com/rishabhgargsde/cloudprober/metrics/testutils"
+	configpb "github.com/rishabhgargsde/cloudprober/probes/grpc/proto"
+	"github.com/rishabhgargsde/cloudprober/probes/options"
+	pb "github.com/rishabhgargsde/cloudprober/servers/grpc/proto"
+	spb "github.com/rishabhgargsde/cloudprober/servers/grpc/proto"
+	"github.com/rishabhgargsde/cloudprober/targets"
+	"github.com/rishabhgargsde/cloudprober/targets/endpoint"
+	"github.com/rishabhgargsde/cloudprober/targets/resolver"
+	"github.com/rishabhgargsde/cloudprober/validators"
 
-	"github.com/stretchr/testify/assert"
+	validators_configpb "github.com/rishabhgargsde/cloudprober/validators/proto"
+	"google3/third_party/golang/testify/assert/assert"
+
 	"google.golang.org/grpc"
-	"google.golang.org/grpc/health/grpc_health_v1"
 	"google.golang.org/grpc/reflection"
 	"google.golang.org/protobuf/proto"
+	healthpb "google3/third_party/grpc_proto/health_go_proto"
 )
 
 var global = struct {
@@ -147,11 +146,6 @@ func TestGRPCSuccess(t *testing.T) {
 			name:   "blob_write",
 			method: configpb.ProbeConf_WRITE.Enum(),
 		},
-		{
-			name:            "generic_request",
-			method:          configpb.ProbeConf_GENERIC.Enum(),
-			validationRegex: "^cloudprober.servers.grpc.Prober,grpc.reflection.v1.ServerReflection,grpc.reflection.v1alpha.ServerReflection$",
-		},
 	}
 
 	for _, tt := range tests {
@@ -166,6 +160,7 @@ func TestGRPCSuccess(t *testing.T) {
 				Timeout:             timeout,
 				Logger:              &logger.Logger{},
 				StatsExportInterval: statsExportInterval,
+				LogMetrics:          func(em *metrics.EventMetrics) {},
 			}
 
 			if tt.validationRegex != "" {
@@ -181,17 +176,8 @@ func TestGRPCSuccess(t *testing.T) {
 			}
 
 			cfg := &configpb.ProbeConf{
-				NumConns:          proto.Int32(2),
-				Method:            tt.method,
-				InsecureTransport: proto.Bool(true),
-			}
-
-			if tt.method.String() == "GENERIC" {
-				cfg.Request = &configpb.GenericRequest{
-					RequestType: &configpb.GenericRequest_ListServices{
-						ListServices: true,
-					},
-				}
+				NumConns: proto.Int32(2),
+				Method:   tt.method,
 			}
 
 			probeOpts.ProbeConf = cfg
@@ -238,32 +224,24 @@ func TestGRPCSuccess(t *testing.T) {
 //
 //	=> 3 - 6 connect errors/sec. Test looks for minimum of 4 attempts.
 func TestConnectFailures(t *testing.T) {
-	// This test is super unreliable on CI. We should consider it disabling it
-	// for all platforms.
-	if runtime.GOOS == "darwin" && os.Getenv("CI") == "true" {
-		t.Skip("Skipping connect failure test on macos for CI")
-	}
 	interval, timeout := 100*time.Millisecond, 100*time.Millisecond
 	addr := "localhost:9"
 
-	numIntervals := 3
-	// we wait for numIntervals * interval before checking the results.
-	// there will be about numIntervals-1 attempts in this period.
-	statsExportInterval := time.Duration(numIntervals) * interval
+	iters := 6
+	statsExportInterval := time.Duration(6) * interval
 
 	probeOpts := &options.Options{
-		Targets:  targets.StaticTargets(addr),
-		Interval: interval,
-		Timeout:  timeout,
-		ProbeConf: &configpb.ProbeConf{
-			NumConns:          proto.Int32(2),
-			InsecureTransport: proto.Bool(true),
-		},
+		Targets:             targets.StaticTargets(addr),
+		Interval:            interval,
+		Timeout:             timeout,
+		ProbeConf:           &configpb.ProbeConf{NumConns: proto.Int32(2)},
 		Logger:              &logger.Logger{},
 		StatsExportInterval: statsExportInterval,
+		LogMetrics:          func(em *metrics.EventMetrics) {},
 	}
 	p := &Probe{}
 	p.Init("grpc-connectfail", probeOpts)
+	p.dialOpts = append(p.dialOpts, grpc.WithBlock())
 	dataChan := make(chan *metrics.EventMetrics, 5)
 	ctx, cancel := context.WithCancel(context.Background())
 	var wg sync.WaitGroup
@@ -279,9 +257,7 @@ func TestConnectFailures(t *testing.T) {
 	}
 
 	for i, em := range ems {
-		// Since connect attempt is made every "interval", we expect at least
-		// numIntervals-1 attempts in first EM, 2*(numIntervals-1) in next.
-		expectedMinCount := int64((i+1)*numIntervals - 1)
+		expectedMinCount := int64((i + 1) * (iters + 1))
 		assert.GreaterOrEqual(t, em.Metric("total").(*metrics.Int).Int64(), expectedMinCount, "message#: %d, total, em: %s", i, em.String())
 		assert.GreaterOrEqual(t, em.Metric("connecterrors").(*metrics.Int).Int64(), expectedMinCount, "message#: %d, connecterrors, em: %s", i, em.String())
 		// 0 success
@@ -304,16 +280,14 @@ func TestProbeTimeouts(t *testing.T) {
 	statsExportInterval := time.Duration(iters) * interval
 
 	probeOpts := &options.Options{
-		Targets:  targets.StaticTargets(addr),
-		Interval: interval,
-		Timeout:  timeout,
-		ProbeConf: &configpb.ProbeConf{
-			NumConns:          proto.Int32(1),
-			InsecureTransport: proto.Bool(true),
-		},
+		Targets:             targets.StaticTargets(addr),
+		Interval:            interval,
+		Timeout:             timeout,
+		ProbeConf:           &configpb.ProbeConf{NumConns: proto.Int32(1)},
 		Logger:              &logger.Logger{},
 		LatencyUnit:         time.Millisecond,
 		StatsExportInterval: statsExportInterval,
+		LogMetrics:          func(em *metrics.EventMetrics) {},
 	}
 
 	p := &Probe{}
@@ -345,7 +319,7 @@ func TestProbeTimeouts(t *testing.T) {
 }
 
 type testTargets struct {
-	r resolver.Resolver
+	r *resolver.Resolver
 
 	start        time.Time
 	startTargets []endpoint.Endpoint
@@ -395,6 +369,7 @@ func TestTargets(t *testing.T) {
 		ProbeConf:           &configpb.ProbeConf{NumConns: proto.Int32(2)},
 		LatencyUnit:         time.Millisecond,
 		StatsExportInterval: statsExportInterval,
+		LogMetrics:          func(em *metrics.EventMetrics) {},
 	}
 
 	p := &Probe{}
@@ -461,9 +436,9 @@ func TestTargets(t *testing.T) {
 }
 
 func TestHealthCheckProbe(t *testing.T) {
-	response := map[string]grpc_health_v1.HealthCheckResponse_ServingStatus{
-		"service-A": grpc_health_v1.HealthCheckResponse_SERVING,
-		"service-B": grpc_health_v1.HealthCheckResponse_NOT_SERVING,
+	response := map[string]healthpb.HealthCheckResponse_ServingStatus{
+		"service-A": healthpb.HealthCheckResponse_SERVING,
+		"service-B": healthpb.HealthCheckResponse_NOT_SERVING,
 	}
 	tests := []struct {
 		service      string
@@ -506,11 +481,11 @@ func TestHealthCheckProbe(t *testing.T) {
 				},
 			}
 
-			p.healthCheckFunc = func() (*grpc_health_v1.HealthCheckResponse, error) {
+			p.healthCheckFunc = func() (*healthpb.HealthCheckResponse, error) {
 				if test.service == "service-err" {
 					return nil, errors.New(test.service)
 				}
-				return &grpc_health_v1.HealthCheckResponse{
+				return &healthpb.HealthCheckResponse{
 					Status: response[test.service],
 				}, nil
 			}
@@ -587,106 +562,6 @@ func TestTransportCreds(t *testing.T) {
 				return
 			}
 			assert.Equal(t, tt.wantInfo, got.Info().SecurityProtocol)
-		})
-	}
-}
-
-func TestConnectionString(t *testing.T) {
-	tests := []struct {
-		name   string
-		probe  *Probe
-		target endpoint.Endpoint
-		want   string
-	}{
-		{
-			name: "hostname_only",
-			probe: &Probe{
-				c:    &configpb.ProbeConf{},
-				opts: &options.Options{},
-			},
-			target: endpoint.Endpoint{Name: "example.com"},
-			want:   "dns:///example.com:443",
-		},
-		{
-			name: "hostname_with_custom_port",
-			probe: &Probe{
-				c: &configpb.ProbeConf{
-					Port: proto.Int32(8080),
-				},
-				opts: &options.Options{},
-			},
-			target: endpoint.Endpoint{Name: "example.com"},
-			want:   "dns:///example.com:8080",
-		},
-		{
-			name: "hostname_with_target_port",
-			probe: &Probe{
-				c:    &configpb.ProbeConf{},
-				opts: &options.Options{},
-			},
-			target: endpoint.Endpoint{Name: "example.com", Port: 9000},
-			want:   "dns:///example.com:9000",
-		},
-		{
-			name: "ip_address",
-			probe: &Probe{
-				c:    &configpb.ProbeConf{},
-				opts: &options.Options{},
-			},
-			target: endpoint.Endpoint{
-				Name: "example.com",
-				IP:   net.ParseIP("192.0.2.1"),
-			},
-			want: "dns:///192.0.2.1:443",
-		},
-		{
-			name: "ip_address_with_version_mismatch",
-			probe: &Probe{
-				c: &configpb.ProbeConf{},
-				opts: &options.Options{
-					IPVersion: 6,
-				},
-			},
-			target: endpoint.Endpoint{
-				Name: "example.com",
-				IP:   net.ParseIP("192.0.2.1"),
-			},
-			want: "dns:///example.com:443",
-		},
-		{
-			name: "with_uri_scheme",
-			probe: &Probe{
-				c: &configpb.ProbeConf{
-					UriScheme: proto.String("xds:///"),
-				},
-				opts: &options.Options{},
-			},
-			target: endpoint.Endpoint{Name: "example.com"},
-			want:   "xds:///example.com:443",
-		},
-		{
-			name: "ipv6_address",
-			probe: &Probe{
-				c:    &configpb.ProbeConf{},
-				opts: &options.Options{},
-			},
-			target: endpoint.Endpoint{
-				Name: "example.com",
-				IP:   net.ParseIP("2001:db8::1"),
-			},
-			want: "dns:///[2001:db8::1]:443",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if tt.probe.l == nil {
-				tt.probe.l = &logger.Logger{}
-			}
-			got := tt.probe.connectionString(tt.target)
-			if got != tt.want {
-				t.Errorf("Probe.connectionString() = %v, want %v", got, tt.want)
-			}
 		})
 	}
 }

@@ -23,41 +23,32 @@ package prober
 
 import (
 	"context"
-	"flag"
-	"fmt"
 	"log/slog"
 	"math/rand"
-	"os"
 	"regexp"
-	"sort"
 	"sync"
 	"time"
 
-	configpb "github.com/cloudprober/cloudprober/config/proto"
-	"github.com/cloudprober/cloudprober/config/runconfig"
-	rdsserver "github.com/cloudprober/cloudprober/internal/rds/server"
-	"github.com/cloudprober/cloudprober/internal/servers"
-	"github.com/cloudprober/cloudprober/internal/sysvars"
-	"github.com/cloudprober/cloudprober/logger"
-	"github.com/cloudprober/cloudprober/metrics"
-	spb "github.com/cloudprober/cloudprober/prober/proto"
-	"github.com/cloudprober/cloudprober/probes"
-	"github.com/cloudprober/cloudprober/probes/options"
-	probes_configpb "github.com/cloudprober/cloudprober/probes/proto"
-	"github.com/cloudprober/cloudprober/surfacers"
-	"github.com/cloudprober/cloudprober/targets"
-	"github.com/cloudprober/cloudprober/targets/endpoint"
-	"github.com/cloudprober/cloudprober/targets/lameduck"
+	configpb "github.com/rishabhgargsde/cloudprober/config/proto"
+	"github.com/rishabhgargsde/cloudprober/config/runconfig"
+	"github.com/rishabhgargsde/cloudprober/logger"
+	"github.com/rishabhgargsde/cloudprober/metrics"
+	spb "github.com/rishabhgargsde/cloudprober/prober/proto"
+	"github.com/rishabhgargsde/cloudprober/probes"
+	"github.com/rishabhgargsde/cloudprober/probes/options"
+	probes_configpb "github.com/rishabhgargsde/cloudprober/probes/proto"
+	rdsserver "github.com/rishabhgargsde/cloudprober/rds/server"
+	"github.com/rishabhgargsde/cloudprober/servers"
+	"github.com/rishabhgargsde/cloudprober/surfacers"
+	"github.com/rishabhgargsde/cloudprober/sysvars"
+	"github.com/rishabhgargsde/cloudprober/targets"
+	"github.com/rishabhgargsde/cloudprober/targets/endpoint"
+	"github.com/rishabhgargsde/cloudprober/targets/lameduck"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
-	"google.golang.org/protobuf/encoding/prototext"
 )
 
 var randGenerator = rand.New(rand.NewSource(time.Now().UnixNano()))
-
-var (
-	probesConfigSavePath = flag.String("probes_config_save_path", "", "Path to save the config to on API triggered config changes. If empty, config saving is disabled.")
-)
 
 // Prober represents a collection of probes where each probe implements the Probe interface.
 type Prober struct {
@@ -77,6 +68,9 @@ type Prober struct {
 
 	// dataChan for passing metrics between probes and main goroutine.
 	dataChan chan *metrics.EventMetrics
+
+	// Used by GetConfig for /config handler.
+	TextConfig string
 
 	// Required for all gRPC server implementations.
 	spb.UnimplementedCloudproberServer
@@ -98,7 +92,7 @@ func (pr *Prober) addProbe(p *probes_configpb.ProbeDef) error {
 	defer pr.mu.Unlock()
 
 	// Check if this probe is supposed to run here.
-	runHere, err := runOnThisHost(p.GetRunOn(), sysvars.GetVar("hostname"))
+	runHere, err := runOnThisHost(p.GetRunOn(), sysvars.Vars()["hostname"])
 	if err != nil {
 		return err
 	}
@@ -180,7 +174,7 @@ func (pr *Prober) Init(ctx context.Context, cfg *configpb.ProberConfig, l *logge
 		targets.SetSharedTargets(st.GetName(), tgts)
 	}
 
-	// Initiliaze probes
+	// Initialize probes
 	pr.Probes = make(map[string]*probes.ProbeInfo)
 	pr.probeCancelFunc = make(map[string]context.CancelFunc)
 	for _, p := range pr.c.GetProbe() {
@@ -316,34 +310,4 @@ func (pr *Prober) startProbesWithJitter(ctx context.Context) {
 		}(interval, probeInfos, iter)
 		iter++
 	}
-}
-
-func (pr *Prober) saveProbesConfigUnprotected(filePath string) error {
-	var keys []string
-	for k := range pr.Probes {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-
-	cfg := &configpb.ProberConfig{}
-	for _, k := range keys {
-		cfg.Probe = append(cfg.Probe, pr.Probes[k].ProbeDef)
-	}
-
-	textCfg := prototext.MarshalOptions{
-		Indent: "  ",
-	}.Format(cfg)
-
-	if textCfg == "" && len(pr.Probes) != 0 {
-		err := fmt.Errorf("text marshaling of probes config returned an empty string. Config: %v", cfg)
-		pr.l.Warning(err.Error())
-		return err
-	}
-
-	if err := os.WriteFile(filePath, []byte(textCfg), 0644); err != nil {
-		pr.l.Errorf("Error saving config to disk: %v", err)
-		return err
-	}
-
-	return nil
 }
