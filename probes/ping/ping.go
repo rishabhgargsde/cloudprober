@@ -50,14 +50,14 @@ import (
 	"sync"
 	"time"
 
-	"github.com/cloudprober/cloudprober/internal/validators"
-	"github.com/cloudprober/cloudprober/internal/validators/integrity"
-	"github.com/cloudprober/cloudprober/logger"
-	"github.com/cloudprober/cloudprober/metrics"
-	"github.com/cloudprober/cloudprober/probes/options"
-	configpb "github.com/cloudprober/cloudprober/probes/ping/proto"
-	"github.com/cloudprober/cloudprober/targets/endpoint"
-	"google.golang.org/protobuf/proto"
+	"github.com/golang/protobuf/proto"
+	"github.com/rishabhgargsde/cloudprober/logger"
+	"github.com/rishabhgargsde/cloudprober/metrics"
+	"github.com/rishabhgargsde/cloudprober/probes/options"
+	configpb "github.com/rishabhgargsde/cloudprober/probes/ping/proto"
+	"github.com/rishabhgargsde/cloudprober/targets/endpoint"
+	"github.com/rishabhgargsde/cloudprober/validators"
+	"github.com/rishabhgargsde/cloudprober/validators/integrity"
 )
 
 const (
@@ -124,12 +124,11 @@ func (p *Probe) initInternal() error {
 	if !ok {
 		return errors.New("no ping config")
 	}
-
 	p.c = c
+
 	if p.c == nil {
 		p.c = &configpb.ProbeConf{}
 	}
-
 	if p.l = p.opts.Logger; p.l == nil {
 		p.l = &logger.Logger{}
 	}
@@ -287,23 +286,17 @@ func (p *Probe) sendPackets(runID uint16, tracker chan bool) {
 
 	for {
 		for _, target := range p.targets {
-			p.results[target.Name].sent++
-
 			if p.target2addr[target.Name] == nil {
 				p.l.Debug("Skipping unresolved target: ", target.Name)
 				continue
 			}
-
 			p.prepareRequestPacket(pktbuf, runID, seq, time.Now().UnixNano())
 			if _, err := p.conn.write(pktbuf, p.target2addr[target.Name]); err != nil {
-				p.l.Error(err.Error())
+				p.l.Warning(err.Error())
 				continue
 			}
-
 			tracker <- true
-			// Sleep between pushing packets to avoid network buffer overflow
-			// in case of larger number of targets.
-			time.Sleep(1 * time.Millisecond)
+			p.results[target.Name].sent++
 		}
 
 		packetsSent++
@@ -361,7 +354,6 @@ func (p *Probe) recvPackets(runID uint16, tracker chan bool) {
 			}
 			// if it's a timeout, return immediately.
 			if neterr, ok := err.(*net.OpError); ok && neterr.Timeout() {
-				p.l.Debugf("Network timed out %d", p.runCnt)
 				return
 			}
 			continue
@@ -430,7 +422,7 @@ func (p *Probe) recvPackets(runID uint16, tracker chan bool) {
 
 		// check if this packet belongs to this run
 		if !matchPacket(runID, pkt.id, pkt.seq, p.useDatagramSocket) {
-			p.l.Info("Reply ", pkt.String(rtt), " Unmatched packet, probably received after last probe's timeout.")
+			p.l.Info("Reply ", pkt.String(rtt), " Unmatched packet, probably from the last probe run.")
 			continue
 		}
 
@@ -474,7 +466,7 @@ func (p *Probe) recvPackets(runID uint16, tracker chan bool) {
 // nearby probe runs' sequence numbers don't have the same first 8-bits, we derive these bits
 // from a running counter.
 //
-// For raw sockets, we have to also make sure (reduce the probablity) that two different probes
+// For raw sockets, we have to also make sure (reduce the probability) that two different probes
 // (not just probe runs) don't get the same ICMP id (for datagram sockets that's not an issue as
 // ICMP id is assigned by the kernel and kernel makes sure its unique). To achieve that we
 // randomize the last 8-bits of the run ID and use run ID as ICMP id.
@@ -525,14 +517,12 @@ func (p *Probe) Start(ctx context.Context, dataChan chan *metrics.EventMetrics) 
 			return
 		default:
 		}
-
 		if !p.opts.IsScheduled() {
 			continue
 		}
-
-		p.l.Debugf("Probe started, runcount %d", p.runCnt)
+		p.l.Debugf("%s: Probe started.", p.name)
 		p.runProbe()
-		p.l.Debugf("Probe finished, runcount %d", p.runCnt)
+		p.l.Debugf("%s: Probe finished.", p.name)
 		if (p.runCnt % uint64(p.statsExportFreq)) != 0 {
 			continue
 		}

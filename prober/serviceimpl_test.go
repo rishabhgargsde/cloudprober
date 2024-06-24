@@ -21,13 +21,13 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cloudprober/cloudprober/metrics"
-	pb "github.com/cloudprober/cloudprober/prober/proto"
-	"github.com/cloudprober/cloudprober/probes"
-	"github.com/cloudprober/cloudprober/probes/options"
-	probes_configpb "github.com/cloudprober/cloudprober/probes/proto"
-	testdatapb "github.com/cloudprober/cloudprober/probes/testdata"
-	targetspb "github.com/cloudprober/cloudprober/targets/proto"
+	"github.com/rishabhgargsde/cloudprober/metrics"
+	pb "github.com/rishabhgargsde/cloudprober/prober/proto"
+	"github.com/rishabhgargsde/cloudprober/probes"
+	"github.com/rishabhgargsde/cloudprober/probes/options"
+	probes_configpb "github.com/rishabhgargsde/cloudprober/probes/proto"
+	testdatapb "github.com/rishabhgargsde/cloudprober/probes/testdata"
+	targetspb "github.com/rishabhgargsde/cloudprober/targets/proto"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -79,15 +79,16 @@ func (p *testProbe) Start(ctx context.Context, dataChan chan *metrics.EventMetri
 
 // We use an EXTENSION probe for testing. Following has the same effect as:
 // This has the same effect as using the following in your config:
-// probe {
-//    name: "<name>"
-//    targets {
-//     dummy_targets{}
-//    }
-//    [cloudprober.probes.testdata.fancy_probe] {
-//      name: "fancy"
-//    }
-// }
+//
+//	probe {
+//	   name: "<name>"
+//	   targets {
+//	    dummy_targets{}
+//	   }
+//	   [cloudprober.probes.testdata.fancy_probe] {
+//	     name: "fancy"
+//	   }
+//	}
 func testProbeDef(name string) *probes_configpb.ProbeDef {
 	probeDef := &probes_configpb.ProbeDef{
 		Name: proto.String(name),

@@ -31,24 +31,23 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/cloudprober/cloudprober/logger"
-	"github.com/cloudprober/cloudprober/metrics"
-	"github.com/cloudprober/cloudprober/surfacers/internal/bigquery"
-	"github.com/cloudprober/cloudprober/surfacers/internal/cloudwatch"
-	"github.com/cloudprober/cloudprober/surfacers/internal/common/options"
-	"github.com/cloudprober/cloudprober/surfacers/internal/common/transform"
-	"github.com/cloudprober/cloudprober/surfacers/internal/datadog"
-	"github.com/cloudprober/cloudprober/surfacers/internal/file"
-	"github.com/cloudprober/cloudprober/surfacers/internal/otel"
-	"github.com/cloudprober/cloudprober/surfacers/internal/postgres"
-	"github.com/cloudprober/cloudprober/surfacers/internal/probestatus"
-	"github.com/cloudprober/cloudprober/surfacers/internal/prometheus"
-	"github.com/cloudprober/cloudprober/surfacers/internal/pubsub"
-	"github.com/cloudprober/cloudprober/surfacers/internal/stackdriver"
-	"github.com/cloudprober/cloudprober/web/formatutils"
-	"google.golang.org/protobuf/proto"
+	"github.com/rishabhgargsde/cloudprober/logger"
+	"github.com/rishabhgargsde/cloudprober/metrics"
+	"github.com/rishabhgargsde/cloudprober/surfacers/internal/bigquery"
 
-	surfacerpb "github.com/cloudprober/cloudprober/surfacers/proto"
+	// "github.com/rishabhgargsde/cloudprober/surfacers/internal/cloudwatch"
+	"github.com/rishabhgargsde/cloudprober/surfacers/internal/common/options"
+	"github.com/rishabhgargsde/cloudprober/surfacers/internal/common/transform"
+	"github.com/rishabhgargsde/cloudprober/surfacers/internal/datadog"
+	"github.com/rishabhgargsde/cloudprober/surfacers/internal/file"
+	"github.com/rishabhgargsde/cloudprober/surfacers/internal/postgres"
+	"github.com/rishabhgargsde/cloudprober/surfacers/internal/probestatus"
+	"github.com/rishabhgargsde/cloudprober/surfacers/internal/prometheus"
+	"github.com/rishabhgargsde/cloudprober/surfacers/internal/pubsub"
+	"github.com/rishabhgargsde/cloudprober/surfacers/internal/stackdriver"
+	"github.com/rishabhgargsde/cloudprober/web/formatutils"
+
+	surfacerpb "github.com/rishabhgargsde/cloudprober/surfacers/proto"
 )
 
 var (
@@ -89,12 +88,6 @@ var defaultSurfacers = []*surfacerpb.SurfacerDef{
 	},
 	{
 		Type: surfacerpb.Type_FILE.Enum(),
-		IgnoreMetricsWithLabel: []*surfacerpb.LabelFilter{
-			{
-				Key:   proto.String("probe"),
-				Value: proto.String("sysvars"),
-			},
-		},
 	},
 }
 
@@ -139,21 +132,15 @@ func (sw *surfacerWrapper) Write(ctx context.Context, em *metrics.EventMetrics) 
 		em = newEM
 	}
 
-	// Apply additional labels
-	for _, label := range sw.opts.AdditionalLabels {
-		em.AddLabel(label[0], label[1])
-	}
-
 	sw.Surfacer.Write(ctx, em)
 }
 
 // SurfacerInfo encapsulates a Surfacer and related info.
 type SurfacerInfo struct {
 	Surfacer
-	Type        string
-	Name        string
-	SurfacerDef *surfacerpb.SurfacerDef
-	Conf        string
+	Type string
+	Name string
+	Conf string
 }
 
 func inferType(s *surfacerpb.SurfacerDef) surfacerpb.Type {
@@ -168,23 +155,22 @@ func inferType(s *surfacerpb.SurfacerDef) surfacerpb.Type {
 		return surfacerpb.Type_POSTGRES
 	case *surfacerpb.SurfacerDef_PubsubSurfacer:
 		return surfacerpb.Type_PUBSUB
-	case *surfacerpb.SurfacerDef_CloudwatchSurfacer:
-		return surfacerpb.Type_CLOUDWATCH
+	// case *surfacerpb.SurfacerDef_CloudwatchSurfacer:
+	// 	return surfacerpb.Type_CLOUDWATCH
 	case *surfacerpb.SurfacerDef_DatadogSurfacer:
 		return surfacerpb.Type_DATADOG
 	case *surfacerpb.SurfacerDef_ProbestatusSurfacer:
 		return surfacerpb.Type_PROBESTATUS
 	case *surfacerpb.SurfacerDef_BigquerySurfacer:
 		return surfacerpb.Type_BIGQUERY
-	case *surfacerpb.SurfacerDef_OtelSurfacer:
-		return surfacerpb.Type_OTEL
+
 	}
 
 	return surfacerpb.Type_NONE
 }
 
 // initSurfacer initializes and returns a new surfacer based on the config.
-func initSurfacer(ctx context.Context, s *surfacerpb.SurfacerDef, sType surfacerpb.Type) (Surfacer, error) {
+func initSurfacer(ctx context.Context, s *surfacerpb.SurfacerDef, sType surfacerpb.Type) (Surfacer, interface{}, error) {
 	// Create a new logger
 	logName := s.GetName()
 	if logName == "" {
@@ -195,48 +181,56 @@ func initSurfacer(ctx context.Context, s *surfacerpb.SurfacerDef, sType surfacer
 
 	opts, err := options.BuildOptionsFromConfig(s, l)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
+	var conf interface{}
 	var surfacer Surfacer
 
 	switch sType {
 	case surfacerpb.Type_PROMETHEUS:
 		surfacer, err = prometheus.New(ctx, s.GetPrometheusSurfacer(), opts, l)
+		conf = s.GetPrometheusSurfacer()
 	case surfacerpb.Type_STACKDRIVER:
 		surfacer, err = stackdriver.New(ctx, s.GetStackdriverSurfacer(), opts, nil, l)
+		conf = s.GetStackdriverSurfacer()
 	case surfacerpb.Type_FILE:
 		surfacer, err = file.New(ctx, s.GetFileSurfacer(), opts, l)
+		conf = s.GetFileSurfacer()
 	case surfacerpb.Type_POSTGRES:
-		surfacer, err = postgres.New(ctx, s.GetPostgresSurfacer(), opts, l)
+		surfacer, err = postgres.New(ctx, s.GetPostgresSurfacer(), l)
+		conf = s.GetPostgresSurfacer()
 	case surfacerpb.Type_PUBSUB:
 		surfacer, err = pubsub.New(ctx, s.GetPubsubSurfacer(), opts, l)
-	case surfacerpb.Type_CLOUDWATCH:
-		surfacer, err = cloudwatch.New(ctx, s.GetCloudwatchSurfacer(), opts, l)
+		conf = s.GetPubsubSurfacer()
+	// case surfacerpb.Type_CLOUDWATCH:
+	// 	surfacer, err = cloudwatch.New(ctx, s.GetCloudwatchSurfacer(), opts, l)
+	// 	conf = s.GetCloudwatchSurfacer()
 	case surfacerpb.Type_DATADOG:
 		surfacer, err = datadog.New(ctx, s.GetDatadogSurfacer(), opts, l)
+		conf = s.GetDatadogSurfacer()
 	case surfacerpb.Type_PROBESTATUS:
 		surfacer, err = probestatus.New(ctx, s.GetProbestatusSurfacer(), opts, l)
+		conf = s.GetProbestatusSurfacer()
 	case surfacerpb.Type_BIGQUERY:
 		surfacer, err = bigquery.New(ctx, s.GetBigquerySurfacer(), opts, l)
-	case surfacerpb.Type_OTEL:
-		surfacer, err = otel.New(ctx, s.GetOtelSurfacer(), opts, l)
+		conf = s.GetBigquerySurfacer()
 	case surfacerpb.Type_USER_DEFINED:
 		userDefinedSurfacersMu.Lock()
 		defer userDefinedSurfacersMu.Unlock()
 		surfacer = userDefinedSurfacers[s.GetName()]
 		if surfacer == nil {
-			return nil, fmt.Errorf("unregistered user defined surfacer: %s", s.GetName())
+			return nil, nil, fmt.Errorf("unregistered user defined surfacer: %s", s.GetName())
 		}
 	default:
-		return nil, fmt.Errorf("unknown surfacer type: %s", s.GetType())
+		return nil, nil, fmt.Errorf("unknown surfacer type: %s", s.GetType())
 	}
 
 	return &surfacerWrapper{
 		Surfacer: surfacer,
 		opts:     opts,
 		lvCache:  make(map[string]*metrics.EventMetrics),
-	}, err
+	}, conf, err
 }
 
 // Init initializes the surfacers from the config protobufs and returns them as
@@ -265,7 +259,7 @@ func Init(ctx context.Context, sDefs []*surfacerpb.SurfacerDef) ([]*SurfacerInfo
 			sType = inferType(sDef)
 		}
 
-		s, err := initSurfacer(ctx, sDef, sType)
+		s, conf, err := initSurfacer(ctx, sDef, sType)
 		if err != nil {
 			return nil, err
 		}
@@ -273,17 +267,16 @@ func Init(ctx context.Context, sDefs []*surfacerpb.SurfacerDef) ([]*SurfacerInfo
 		foundSurfacers[sType] = true
 
 		result = append(result, &SurfacerInfo{
-			Surfacer:    s,
-			Type:        sType.String(),
-			Name:        sDef.GetName(),
-			SurfacerDef: sDef,
-			Conf:        formatutils.ConfToString(sDef),
+			Surfacer: s,
+			Type:     sType.String(),
+			Name:     sDef.GetName(),
+			Conf:     formatutils.ConfToString(conf),
 		})
 	}
 
 	for _, s := range requiredSurfacers {
 		if !foundSurfacers[s.GetType()] {
-			surfacer, err := initSurfacer(ctx, s, s.GetType())
+			surfacer, _, err := initSurfacer(ctx, s, s.GetType())
 			if err != nil {
 				return nil, err
 			}
@@ -300,8 +293,8 @@ func Init(ctx context.Context, sDefs []*surfacerpb.SurfacerDef) ([]*SurfacerInfo
 // Example usage:
 //
 //	import (
-//		"github.com/cloudprober/cloudprober"
-//		"github.com/cloudprober/cloudprober/surfacers"
+//		"github.com/rishabhgargsde/cloudprober"
+//		"github.com/rishabhgargsde/cloudprober/surfacers"
 //	)
 //
 //	s := &FancySurfacer{}

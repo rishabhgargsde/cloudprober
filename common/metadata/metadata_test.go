@@ -21,7 +21,7 @@ import (
 	"regexp"
 	"testing"
 
-	"github.com/stretchr/testify/assert"
+	"google3/third_party/golang/testify/assert/assert"
 )
 
 func TestUniqueID(t *testing.T) {

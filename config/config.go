@@ -15,176 +15,159 @@
 package config
 
 import (
-	"bufio"
-	"bytes"
-	"context"
-	"errors"
-	"flag"
 	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
-	"runtime"
 	"strings"
 
-	"github.com/cloudprober/cloudprober/internal/file"
-	"github.com/cloudprober/cloudprober/logger"
-	"github.com/google/go-jsonnet"
+	"flag"
+
+	"github.com/rishabhgargsde/cloudprober/common/file"
+	configpb "github.com/rishabhgargsde/cloudprober/config/proto"
+	"github.com/rishabhgargsde/cloudprober/logger"
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/encoding/prototext"
-	"google.golang.org/protobuf/reflect/protoreflect"
-	"sigs.k8s.io/yaml"
+	"google3/third_party/golang/cloud_google_com/go/compute/v/v0/metadata/metadata"
+	"google3/third_party/golang/kubeyaml/yaml"
 )
 
 var (
-	configFile          = flag.String("config_file", "", "Config file")
-	surfacersConfigFile = flag.String("surfacers_config_file", "", "Surfacers config file")
-	testInstanceName    = flag.String("test_instance_name", "ig-us-central1-a-01-0000", "Instance name example to be used in tests")
+	configFile = flag.String("config_file", "", "Config file")
 )
 
-// EnvRegex is the regex used to find environment variable placeholders
-// in the config file. The placeholders are of the form **$<env_var_name>**,
-// and are added during Go template processing for envSecret functions.
-var EnvRegex = regexp.MustCompile(`\*\*\$([^*\s]+)\*\*`)
+var envRegex = regexp.MustCompile(`\*\*\$([^*\s]+)\*\*`)
 
 const (
 	configMetadataKeyName = "cloudprober_config"
+	defaultConfigFile     = "/etc/cloudprober.cfg"
 )
 
-var configTestVars = map[string]any{
-	"zone":              "us-central1-a",
-	"project":           "fake-domain.com:fake-project",
-	"project_id":        "12345678",
-	"instance":          *testInstanceName,
-	"internal_ip":       "192.168.0.10",
-	"external_ip":       "10.10.10.10",
-	"instance_template": "ig-us-central1-a-01",
-	"machine_type":      "e2-small",
-}
-
-func DefaultConfigSource(opts ...Option) ConfigSource {
-	opts = append(opts, WithSurfacerConfig(*surfacersConfigFile))
-	return ConfigSourceWithFile(*configFile, opts...)
-}
-
-func ConfigSourceWithFile(fileName string, opts ...Option) ConfigSource {
-	dcs := &defaultConfigSource{
-		fileName: fileName,
+func readConfigFile(fileName string) (string, string, error) {
+	b, err := file.ReadFile(fileName)
+	if err != nil {
+		return "", "", err
 	}
-	cs := ConfigSource(dcs)
-	for _, opt := range opts {
-		cs = opt(cs)
-	}
-	return cs
-}
 
-func formatFromFileName(fileName string) string {
 	switch filepath.Ext(fileName) {
+	case ".pb.txt", ".cfg", ".textpb":
+		return string(b), "textpb", nil
 	case ".json":
-		return "json"
-	case ".jsonnet":
-		return "jsonnet"
+		return string(b), "json", nil
 	case ".yaml", ".yml":
-		return "yaml"
-	default:
-		return "textpb"
+		return string(b), "yaml", nil
 	}
+
+	return string(b), "", nil
 }
 
-// handleIncludes handles "include" statements in the config file. It handles
-// nested includes in a depth-first manner.
-func handleIncludes(baseDir string, content []byte) (string, error) {
-	var final []string
+func GetConfig(confFile string, l *logger.Logger) (content string, format string, err error) {
+	if confFile != "" {
+		return readConfigFile(confFile)
+	}
 
-	re := regexp.MustCompile(`(?m)^include\s+"([^"]+)"\s*$`)
+	if *configFile != "" {
+		return readConfigFile(*configFile)
+	}
 
-	scanner := bufio.NewScanner(bytes.NewReader(content))
-	for scanner.Scan() {
-		line := scanner.Text()
-		m := re.FindStringSubmatch(line)
-		if len(m) != 2 {
-			final = append(final, line)
-			continue
-		}
-
-		includePath := filepath.Join(baseDir, m[1])
-		files, err := filepath.Glob(includePath)
-		if err != nil {
-			return "", err
-		}
-		if len(files) == 0 {
-			return "", fmt.Errorf("config include error: %s didn't match any files", includePath)
-		}
-
-		for _, file := range files {
-			includedCfg, err := readConfigFile(file)
-			if err != nil {
-				return "", err
-			}
-			final = append(final, includedCfg)
+	// On GCE first check if there is a config in custom metadata
+	// attributes.
+	if metadata.OnGCE() {
+		if config, err := ReadFromGCEMetadata(configMetadataKeyName); err != nil {
+			l.Infof("Error reading config from metadata. Err: %v", err)
+		} else {
+			return config, "", nil
 		}
 	}
 
-	newline := "\n"
-	if runtime.GOOS == "windows" {
-		newline = "\r\n"
-	}
-	return strings.Join(final, newline), nil
-}
-
-func readConfigFile(fileName string) (string, error) {
-	b, err := file.ReadFile(context.Background(), fileName)
-	if err != nil {
-		return "", err
+	// If config not found in metadata, check default config on disk
+	if _, err := os.Stat(defaultConfigFile); !os.IsNotExist(err) {
+		return readConfigFile(defaultConfigFile)
 	}
 
-	final, err := handleIncludes(filepath.Dir(fileName), b)
-	return final, err
+	l.Warningf("Config file %s not found. Using default config.", defaultConfigFile)
+	return DefaultConfig(), "textpb", nil
 }
 
-func processConfigText(configStr, configFormat string, tmplData map[string]any, m protoreflect.ProtoMessage, l *logger.Logger) (string, error) {
-	parsedConfig, err := parseTemplate(configStr, tmplData, nil)
-	if err != nil {
-		return "", fmt.Errorf("error parsing surfacers config file as Go template. Err: %v", err)
-	}
-
-	return parsedConfig, unmarshalConfig(substEnvVars(parsedConfig, l), configFormat, m)
-}
-
-func unmarshalConfig(configStr, configFormat string, m protoreflect.ProtoMessage) error {
+func configToProto(configStr, configFormat string) (*configpb.ProberConfig, error) {
+	cfg := &configpb.ProberConfig{}
 	switch configFormat {
 	case "yaml":
 		jsonCfg, err := yaml.YAMLToJSON([]byte(configStr))
 		if err != nil {
-			return fmt.Errorf("error converting YAML config to JSON: %v", err)
+			return nil, fmt.Errorf("error converting YAML config to JSON: %v", err)
 		}
-		if err := protojson.Unmarshal(jsonCfg, m); err != nil {
-			return fmt.Errorf("error unmarshaling intermediate JSON to proto: %v", err)
-		}
-	case "jsonnet":
-		jsonCfg, err := jsonnet.MakeVM().EvaluateAnonymousSnippet("config", configStr)
-		if err != nil {
-			return fmt.Errorf("error evaluating jsonnet config: %v", err)
-		}
-		if err := protojson.Unmarshal([]byte(jsonCfg), m); err != nil {
-			return fmt.Errorf("error unmarshaling intermediate JSON to proto: %v", err)
+		if err := protojson.Unmarshal(jsonCfg, cfg); err != nil {
+			return nil, fmt.Errorf("error unmarshaling intermediate JSON to proto: %v", err)
 		}
 	case "json":
-		if err := protojson.Unmarshal([]byte(configStr), m); err != nil {
-			return err
+		if err := protojson.Unmarshal([]byte(configStr), cfg); err != nil {
+			return nil, err
 		}
 	default:
-		if err := prototext.Unmarshal([]byte(configStr), m); err != nil {
-			return err
+		if err := prototext.Unmarshal([]byte(configStr), cfg); err != nil {
+			return nil, err
 		}
 	}
 
-	return nil
+	return cfg, nil
+}
+
+func ConfigTest(fileName string, baseVars map[string]string) error {
+	if fileName == "" {
+		fileName = *configFile
+	}
+	content, configFormat, err := readConfigFile(fileName)
+	if err != nil {
+		return err
+	}
+
+	configStr, err := ParseTemplate(content, baseVars, func(v string) (string, error) {
+		return v + "-test-value", nil
+	})
+
+	if err != nil {
+		return err
+	}
+
+	_, err = configToProto(configStr, configFormat)
+	return err
+}
+
+func DumpConfig(fileName, outFormat string, baseVars map[string]string) ([]byte, error) {
+	if fileName == "" {
+		fileName = *configFile
+	}
+
+	content, configFormat, err := readConfigFile(fileName)
+	if err != nil {
+		return nil, err
+	}
+
+	cfg, _, err := ParseConfig(content, configFormat, baseVars, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	switch outFormat {
+	case "yaml":
+		jsonCfg, err := protojson.Marshal(cfg)
+		if err != nil {
+			return nil, fmt.Errorf("error converting config to json: %v", err)
+		}
+		return yaml.JSONToYAML(jsonCfg)
+	case "json":
+		return protojson.MarshalOptions{Multiline: true, Indent: "  "}.Marshal(cfg)
+	case "textpb":
+		return prototext.MarshalOptions{Multiline: true, Indent: "  "}.Marshal(cfg)
+	default:
+		return nil, fmt.Errorf("unknown format: %s", outFormat)
+	}
 }
 
 // substEnvVars substitutes environment variables in the config string.
 func substEnvVars(configStr string, l *logger.Logger) string {
-	m := EnvRegex.FindAllStringSubmatch(configStr, -1)
+	m := envRegex.FindAllStringSubmatch(configStr, -1)
 	if len(m) == 0 {
 		return configStr
 	}
@@ -210,47 +193,12 @@ func substEnvVars(configStr string, l *logger.Logger) string {
 	return configStr
 }
 
-func ConfigTest(cs ConfigSource) error {
-	// cs is provided only for testing.
-	if cs == nil {
-		if *configFile == "" {
-			return errors.New("config_file is required for testing")
-		}
-		cs = &defaultConfigSource{
-			fileName: *configFile,
-			baseVars: configTestVars,
-			getGCECustomMetadata: func(v string) (string, error) {
-				return v + "-test-value", nil
-			},
-		}
-	}
-	_, err := cs.GetConfig()
-	return err
-}
-
-func DumpConfig(outFormat string, cs ConfigSource) ([]byte, error) {
-	if cs == nil {
-		cs = &defaultConfigSource{
-			baseVars: configTestVars,
-		}
-	}
-	cfg, err := cs.GetConfig()
+func ParseConfig(content, format string, vars map[string]string, l *logger.Logger) (*configpb.ProberConfig, string, error) {
+	parsedConfig, err := ParseTemplate(content, vars, nil)
 	if err != nil {
-		return nil, err
+		return nil, "", fmt.Errorf("error parsing config file as Go template. Err: %v", err)
 	}
 
-	switch outFormat {
-	case "yaml":
-		jsonCfg, err := protojson.Marshal(cfg)
-		if err != nil {
-			return nil, fmt.Errorf("error converting config to json: %v", err)
-		}
-		return yaml.JSONToYAML(jsonCfg)
-	case "json":
-		return protojson.MarshalOptions{Multiline: true, Indent: "  "}.Marshal(cfg)
-	case "textpb":
-		return prototext.MarshalOptions{Multiline: true, Indent: "  "}.Marshal(cfg)
-	default:
-		return nil, fmt.Errorf("unknown format: %s", outFormat)
-	}
+	cfg, err := configToProto(substEnvVars(parsedConfig, l), format)
+	return cfg, parsedConfig, err
 }

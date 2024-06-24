@@ -1,4 +1,4 @@
-// Copyright 2017-2024 The Cloudprober Authors.
+// Copyright 2017-2023 The Cloudprober Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -24,109 +24,112 @@ variable map (usually GCP metadata variables) and some predefined macros.
 
 # Macros
 
-Cloudprober configs support Go text templates with sprig functions
-(https://masterminds.github.io/sprig/) and the following macros to make configs
-construction easier:
+Cloudprober configs support some macros to make configs construction easier:
 
-		gceCustomMetadata
-		 	Get value of a GCE custom metadata key. It first looks for the given key in
-			the instance's custom metadata and if it is not found there, it looks for it
-			in the project's custom metaata.
+	env
+		Get the value of an environment variable.
 
-			# Get load balancer IP from metadata.
-			probe {
-			  name: "http_lb"
-			  type: HTTP
-			  targets {
-			    host_names: "{{gceCustomMetadata "lb_ip"}}"
-			  }
-			}
+		Example:
 
-		extractSubstring
-			Extract substring from a string using regex. Example use in config:
+		probe {
+		  name: "dns_google_jp"
+		  type: DNS
+		  targets {
+		    host_names: "1.1.1.1"
+		  }
+		  dns_probe {
+		    resolved_domain: "{{env "TEST_DOM"}}"
+		  }
+		}
 
-			# Sharded VM-to-VM connectivity checks over internal IP
-			# Instance name format: ig-<zone>-<shard>-<random-characters>, e.g. ig-asia-east1-a-00-ftx1
-			{{$shard := .instance | extractSubstring "[^-]+-[^-]+-[^-]+-[^-]+-([^-]+)-.*" 1}}
-			probe {
-			  name: "vm-to-vm-{{$shard}}"
-			  type: PING
-			  targets {
-			    gce_targets {
-			      instances {}
-			    }
-			    regex: "{{$targets}}"
-			  }
-			  run_on: "{{$run_on}}"
-			}
+		# Then run cloudprober as:
+		TEST_DOM=google.co.jp ./cloudprober --config_file=cloudprober.cfg
 
-		mkMap or dict
-			Same as dict: https://masterminds.github.io/sprig/dicts.html. Returns a
-			map built from the arguments. It's useful as Go templates take only one
-			argument. With this function, we can create a map of multiple values and
-			pass it to a template. Example use in config:
+	gceCustomMetadata
+	 	Get value of a GCE custom metadata key. It first looks for the given key in
+		the instance's custom metadata and if it is not found there, it looks for it
+		in the project's custom metaata.
 
-			{{define "probeTmpl"}}
-			probe {
-			  type: {{.typ}}
-			  name: "{{.name}}"
-			  targets {
-			    host_names: "www.google.com"
-			  }
-			}
-			{{end}}
+		# Get load balancer IP from metadata.
+		probe {
+		  name: "http_lb"
+		  type: HTTP
+		  targets {
+		    host_names: "{{gceCustomMetadata "lb_ip"}}"
+		  }
+		}
 
-			{{template "probeTmpl" dict "typ" "PING" "name" "ping_google"}}
-			{{template "probeTmpl" dict "typ" "HTTP" "name" "http_google"}}
+	extractSubstring
+		Extract substring from a string using regex. Example use in config:
 
-		mkSlice or list
-			Same as list: https://masterminds.github.io/sprig/lists.html. It can be
-			used with the built-in'range' function to replicate text.
+		# Sharded VM-to-VM connectivity checks over internal IP
+		# Instance name format: ig-<zone>-<shard>-<random-characters>, e.g. ig-asia-east1-a-00-ftx1
+		{{$shard := .instance | extractSubstring "[^-]+-[^-]+-[^-]+-[^-]+-([^-]+)-.*" 1}}
+		probe {
+		  name: "vm-to-vm-{{$shard}}"
+		  type: PING
+		  targets {
+		    gce_targets {
+		      instances {}
+		    }
+		    regex: "{{$targets}}"
+		  }
+		  run_on: "{{$run_on}}"
+		}
 
-			{{with $regions := list "us=central1" "us-east1"}}
-			{{range $_, $region := $regions}}
+	mkMap
+		Returns a map built from the arguments. It's useful as Go templates take only
+		one argument. With this function, we can create a map of multiple values and
+		pass it to a template. Example use in config:
 
-			probe {
-			  name: "service-a-{{$region}}"
-			  type: HTTP
-			  targets {
-			    host_names: "service-a.{{$region}}.corp.xx.com"
-			  }
-			}
+		{{define "probeTmpl"}}
+		probe {
+		  type: {{.typ}}
+		  name: "{{.name}}"
+		  targets {
+		    host_names: "www.google.com"
+		  }
+		}
+		{{end}}
 
-			{{end}}
-			{{end}}
+		{{template "probeTmpl" mkMap "typ" "PING" "name" "ping_google"}}
+		{{template "probeTmpl" mkMap "typ" "HTTP" "name" "http_google"}}
 
-	    configDir
-			configDir expands to the config file's directory. This is useful to
-			specify files relative to the config file.
 
-	    	probe {
-			  name: "test_x"
-			  type: EXTERNAL
-			  probe_external {
-			    # test_x.sh is in the same directory as the config file.
-			    command: "{{configDir}}/test_x.sh"
-	    	  }
-	    	}
+	mkSlice
+		Returns a slice consisting of the arguments. It can be used with the built-in
+		'range' function to replicate text.
+
+
+		{{with $regions := mkSlice "us=central1" "us-east1"}}
+		{{range $_, $region := $regions}}
+
+		probe {
+		  name: "service-a-{{$region}}"
+		  type: HTTP
+		  targets {
+		    host_names: "service-a.{{$region}}.corp.xx.com"
+		  }
+		}
+
+		{{end}}
+		{{end}}
 */
 package config
 
 import (
 	"bytes"
 	"fmt"
-	"path/filepath"
 	"regexp"
 	"text/template"
 
-	"cloud.google.com/go/compute/metadata"
-	"github.com/Masterminds/sprig/v3"
-	configpb "github.com/cloudprober/cloudprober/config/proto"
-	"github.com/cloudprober/cloudprober/config/runconfig"
+	configpb "github.com/rishabhgargsde/cloudprober/config/proto"
 	"google.golang.org/protobuf/encoding/prototext"
+	"google3/third_party/golang/cloud_google_com/go/compute/v/v0/metadata/metadata"
+	"google3/third_party/golang/slimsprig/sprig"
 )
 
-// readFromGCEMetadata returns the value of GCE custom metadata variables. To
+// ReadFromGCEMetadata returns the value of GCE custom metadata variables. To
 // allow for instance level as project level variables, it looks for metadata
 // variable in the following order:
 //
@@ -135,7 +138,7 @@ import (
 //
 // b. If (and only if), the key is not found in the step above, we look for
 // the same key in the project's custom metadata.
-var readFromGCEMetadata = func(metadataKeyName string) (string, error) {
+var ReadFromGCEMetadata = func(metadataKeyName string) (string, error) {
 	val, err := metadata.InstanceAttributeValue(metadataKeyName)
 	// If instance level config found, return
 	if _, notFound := err.(metadata.NotDefinedError); !notFound {
@@ -151,10 +154,10 @@ func DefaultConfig() string {
 	return string(b)
 }
 
-// parseTemplate processes a config file as a Go text template.
-func parseTemplate(config string, tmplVars map[string]any, getGCECustomMetadata func(string) (string, error)) (string, error) {
+// ParseTemplate processes a config file as a Go text template.
+func ParseTemplate(config string, sysVars map[string]string, getGCECustomMetadata func(string) (string, error)) (string, error) {
 	if getGCECustomMetadata == nil {
-		getGCECustomMetadata = readFromGCEMetadata
+		getGCECustomMetadata = ReadFromGCEMetadata
 	}
 
 	gceCustomMetadataFunc := func(v string) (string, error) {
@@ -186,7 +189,6 @@ func parseTemplate(config string, tmplVars map[string]any, getGCECustomMetadata 
 			return matches[n], nil
 		},
 		"envSecret": func(s string) string { return "**$" + s + "**" },
-		"configDir": func() string { return filepath.Dir(runconfig.ConfigFilePath()) },
 	}
 
 	for name, f := range sprig.TxtFuncMap() {
@@ -200,7 +202,7 @@ func parseTemplate(config string, tmplVars map[string]any, getGCECustomMetadata 
 		return "", err
 	}
 	var b bytes.Buffer
-	if err := configTmpl.Execute(&b, tmplVars); err != nil {
+	if err := configTmpl.Execute(&b, sysVars); err != nil {
 		return "", err
 	}
 	return b.String(), nil

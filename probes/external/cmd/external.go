@@ -26,11 +26,11 @@ import (
 
 	"flag"
 
-	"github.com/cloudprober/cloudprober/metrics"
-	"github.com/cloudprober/cloudprober/probes/external"
-	configpb "github.com/cloudprober/cloudprober/probes/external/proto"
-	"github.com/cloudprober/cloudprober/probes/options"
-	"github.com/cloudprober/cloudprober/targets"
+	"github.com/rishabhgargsde/cloudprober/metrics"
+	"github.com/rishabhgargsde/cloudprober/probes/external"
+	configpb "github.com/rishabhgargsde/cloudprober/probes/external/proto"
+	"github.com/rishabhgargsde/cloudprober/probes/options"
+	"github.com/rishabhgargsde/cloudprober/targets"
 	"google.golang.org/protobuf/encoding/prototext"
 )
 

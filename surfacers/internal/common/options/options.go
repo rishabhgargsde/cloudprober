@@ -19,22 +19,18 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"os"
 	"regexp"
-	"strings"
 
-	"github.com/cloudprober/cloudprober/config/runconfig"
-	"github.com/cloudprober/cloudprober/logger"
-	"github.com/cloudprober/cloudprober/metrics"
-	surfacerpb "github.com/cloudprober/cloudprober/surfacers/proto"
+	"github.com/rishabhgargsde/cloudprober/config/runconfig"
+	"github.com/rishabhgargsde/cloudprober/logger"
+	"github.com/rishabhgargsde/cloudprober/metrics"
+	surfacerpb "github.com/rishabhgargsde/cloudprober/surfacers/proto"
 )
 
 type labelFilter struct {
 	key   string
 	value string
 }
-
-var defaultLatencyMetricRe = regexp.MustCompile("^(.*_|)latency$")
 
 func (lf *labelFilter) matchEventMetrics(em *metrics.EventMetrics) bool {
 	if lf.key != "" {
@@ -77,18 +73,12 @@ type Options struct {
 	Logger            *logger.Logger
 	HTTPServeMux      *http.ServeMux
 
-	// Metrics filtering
 	allowLabelFilters  []*labelFilter
 	ignoreLabelFilters []*labelFilter
 	allowMetricName    *regexp.Regexp
 	ignoreMetricName   *regexp.Regexp
 
-	// latencyMetricRe is a regular expression to match latency metrics.
-	latencyMetricRe *regexp.Regexp
-
 	AddFailureMetric bool
-
-	AdditionalLabels [][2]string
 }
 
 // AllowEventMetrics returns whether a certain EventMetrics should be allowed
@@ -127,10 +117,6 @@ func (opts *Options) AllowMetric(metricName string) bool {
 		return true
 	}
 
-	if !opts.AddFailureMetric && metricName == "failure" {
-		return false
-	}
-
 	if opts.ignoreMetricName != nil && opts.ignoreMetricName.MatchString(metricName) {
 		return false
 	}
@@ -142,38 +128,6 @@ func (opts *Options) AllowMetric(metricName string) bool {
 	return opts.allowMetricName.MatchString(metricName)
 }
 
-func (opts *Options) IgnoreMetric(metricName string) bool {
-	return !opts.AllowMetric(metricName)
-}
-
-func (opts *Options) IsLatencyMetric(metricName string) bool {
-	if opts == nil {
-		return defaultLatencyMetricRe.MatchString(metricName)
-	}
-	return opts.latencyMetricRe.MatchString(metricName)
-}
-
-func processAdditionalLabels(envVar string, l *logger.Logger) [][2]string {
-	if envVar == "" {
-		return nil
-	}
-	labelsStr := strings.TrimSpace(os.Getenv(envVar))
-	if labelsStr == "" {
-		return nil
-	}
-	var labels [][2]string
-	for _, label := range strings.Split(labelsStr, ",") {
-		kv := strings.Split(label, "=")
-		if len(kv) != 2 || kv[0] == "" || kv[1] == "" {
-			l.Warningf("Invalid additional label format: %s", label)
-			continue
-		}
-		key, val := strings.TrimSpace(kv[0]), strings.TrimSpace(kv[1])
-		labels = append(labels, [2]string{key, val})
-	}
-	return labels
-}
-
 // buildOptions builds surfacer options using config.
 func buildOptions(sdef *surfacerpb.SurfacerDef, ignoreInit bool, l *logger.Logger) (*Options, error) {
 	opts := &Options{
@@ -181,7 +135,6 @@ func buildOptions(sdef *surfacerpb.SurfacerDef, ignoreInit bool, l *logger.Logge
 		Logger:            l,
 		HTTPServeMux:      runconfig.DefaultHTTPServeMux(),
 		MetricsBufferSize: int(sdef.GetMetricsBufferSize()),
-		AddFailureMetric:  sdef.GetAddFailureMetric(),
 	}
 
 	serveMux := runconfig.DefaultHTTPServeMux()
@@ -215,13 +168,13 @@ func buildOptions(sdef *surfacerpb.SurfacerDef, ignoreInit bool, l *logger.Logge
 		}
 	}
 
-	re, err := regexp.Compile(opts.Config.GetLatencyMetricPattern())
-	if err != nil {
-		return nil, fmt.Errorf("invalid latency_metric_pattern: %s, err: %v", opts.Config.GetLatencyMetricPattern(), err)
+	opts.AddFailureMetric = opts.Config.GetAddFailureMetric()
+	defaultFailureMetric := map[surfacerpb.Type]bool{
+		surfacerpb.Type_STACKDRIVER: true,
 	}
-	opts.latencyMetricRe = re
-
-	opts.AdditionalLabels = processAdditionalLabels(opts.Config.GetAdditionalLabelsEnvVar(), l)
+	if opts.Config.AddFailureMetric == nil && defaultFailureMetric[opts.Config.GetType()] {
+		opts.AddFailureMetric = true
+	}
 
 	return opts, nil
 }

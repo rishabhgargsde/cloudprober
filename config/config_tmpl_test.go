@@ -16,18 +16,18 @@ package config
 
 import (
 	"fmt"
-	"runtime"
 	"testing"
 
-	"cloud.google.com/go/compute/metadata"
-	configpb "github.com/cloudprober/cloudprober/config/proto"
-	"github.com/cloudprober/cloudprober/config/runconfig"
-	"github.com/stretchr/testify/assert"
+	"google3/third_party/golang/testify/assert/assert"
+
+	"google3/third_party/golang/cloud_google_com/go/compute/v/v0/metadata/metadata"
+
+	configpb "github.com/rishabhgargsde/cloudprober/config/proto"
 	"google.golang.org/protobuf/encoding/prototext"
 )
 
-func testParse(config string, tmplVars map[string]any) (*configpb.ProberConfig, error) {
-	textConfig, err := parseTemplate(config, tmplVars, nil)
+func testParse(config string, sysVars map[string]string) (*configpb.ProberConfig, error) {
+	textConfig, err := ParseTemplate(config, sysVars, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -43,7 +43,7 @@ func TestParseTemplate(t *testing.T) {
 	tests := []struct {
 		desc        string
 		config      string
-		tmplVars    map[string]any
+		sysVars     map[string]string
 		wantProbes  []string
 		wantTargets []string
 		wantErrStr  string
@@ -60,22 +60,7 @@ func TestParseTemplate(t *testing.T) {
 				}
 				}
 			`,
-			tmplVars:    map[string]any{"region": "testRegion"},
-			wantProbes:  []string{"vm-to-google-02-testRegion"},
-			wantTargets: []string{"host_names:\"www.google.com\""},
-		},
-		{
-			desc: "config-with-nested-tmpl-vars",
-			config: `
-				probe {
-				type: PING
-				name: "vm-to-google-{{.shard}}-{{.config.region}}"
-				targets {
-					host_names: "{{.config.targets}}"
-				}
-				}
-			`,
-			tmplVars:    map[string]any{"shard": "02", "config": map[string]string{"region": "testRegion", "targets": "www.google.com"}},
+			sysVars:     map[string]string{"region": "testRegion"},
 			wantProbes:  []string{"vm-to-google-02-testRegion"},
 			wantTargets: []string{"host_names:\"www.google.com\""},
 		},
@@ -141,11 +126,11 @@ func TestParseTemplate(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.desc, func(t *testing.T) {
-			if tt.tmplVars == nil {
-				tt.tmplVars = map[string]any{}
+			if tt.sysVars == nil {
+				tt.sysVars = map[string]string{}
 			}
 
-			cfg, err := testParse(tt.config, tt.tmplVars)
+			cfg, err := testParse(tt.config, tt.sysVars)
 			if err != nil {
 				if tt.wantErrStr == "" {
 					t.Errorf("Got unexpected error: %v", err)
@@ -168,41 +153,6 @@ func TestParseTemplate(t *testing.T) {
 	}
 }
 
-func TestParseTemplateConfigDir(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("Skipping test on windows")
-	}
-	configFilePath := runconfig.ConfigFilePath()
-	defer runconfig.SetConfigFilePath(configFilePath)
-	runconfig.SetConfigFilePath("/cfg/cloudprober.cfg")
-
-	testConfig := `
-probe {
-  name: "test_x"
-  type: EXTERNAL
-  probe_external {
-    # test_x.sh is in the same directory as the config file.
-	command: "{{configDir}}/scripts/test_x.sh"
-  }
-}
-`
-	wantConfig := `
-probe {
-  name: "test_x"
-  type: EXTERNAL
-  probe_external {
-    # test_x.sh is in the same directory as the config file.
-	command: "/cfg/scripts/test_x.sh"
-  }
-}
-`
-	textConfig, err := parseTemplate(testConfig, map[string]any{}, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	assert.Equal(t, wantConfig, textConfig, "config")
-}
-
 func TestParseGCEMetadata(t *testing.T) {
 	testConfig := `
 probe {
@@ -213,7 +163,7 @@ probe {
   }
 }
 `
-	textConfig, err := parseTemplate(testConfig, map[string]any{}, func(key string) (string, error) {
+	textConfig, err := ParseTemplate(testConfig, map[string]string{}, func(key string) (string, error) {
 		if key == "google-probe-name" {
 			return "google_dot_com_from", nil
 		}

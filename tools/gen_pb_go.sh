@@ -16,7 +16,7 @@
 
 # This script generates Go code for the config protobufs.
 
-PROTOC_VERSION="27.5"
+PROTOC_VERSION="21.5"
 PROJECT="cloudprober"
 
 GOPATH=$(go env GOPATH)
@@ -84,7 +84,10 @@ trap cleanup EXIT
 go install google.golang.org/protobuf/cmd/protoc-gen-go@latest
 go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@latest
 
-echo "Generating Go code for protobufs.."
+# Install cue from Go
+go install cuelang.org/go/cmd/cue@latest
+
+echo "Generating Go code and CUE schema for protobufs.."
 echo "======================================================================"
 # Generate protobuf code from the root directory to ensure proper import paths.
 cd $PROJECTROOT
@@ -99,6 +102,9 @@ cd $TMPDIR
 
 MODULE=github.com/cloudprober/cloudprober
 
+echo "Generating CUE schema from protobufs.."
+cue import proto -I . ${MODULE}/config/proto/config.proto --proto_enum json -f
+
 # Generate Go code for proto
 find ${MODULE} -type d | \
   while read -r dir
@@ -108,13 +114,8 @@ find ${MODULE} -type d | \
     ${protoc_path} --go-grpc_out=. --go_out=. ${dir}/*.proto
   done
 
-${protoc_path} --python_out=. ${MODULE}/probes/external/proto/server.proto
-PY_SRC_DIR=${MODULE}/probes/external/serverutils/py/src/cloudprober/external
-mkdir -p ${PY_SRC_DIR}
-mv github/com/cloudprober/cloudprober/probes/external/proto/server_pb2.py ${PY_SRC_DIR}
-
 # Copy generated files back to their original location.
-find ${MODULE} \( -name *.pb.go -o -name *.py \) | \
+find ${MODULE} \( -name *.pb.go -o -name *proto_gen.cue \) | \
   while read -r pbgofile
   do
     dst=${PROJECTROOT}/${pbgofile/github.com\/cloudprober\//}

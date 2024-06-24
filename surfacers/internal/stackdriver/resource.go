@@ -18,10 +18,10 @@ import (
 	"os"
 	"strings"
 
-	"cloud.google.com/go/compute/metadata"
-	md "github.com/cloudprober/cloudprober/common/metadata"
-	"github.com/cloudprober/cloudprober/logger"
+	md "github.com/rishabhgargsde/cloudprober/common/metadata"
+	"github.com/rishabhgargsde/cloudprober/logger"
 	monitoring "google.golang.org/api/monitoring/v3"
+	"google3/third_party/golang/cloud_google_com/go/compute/v/v0/metadata/metadata"
 )
 
 func kubernetesResource(projectID string) (*monitoring.MonitoredResource, error) {

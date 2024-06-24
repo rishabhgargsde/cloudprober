@@ -34,17 +34,16 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/cloudprober/cloudprober/config"
-	configpb "github.com/cloudprober/cloudprober/config/proto"
-	"github.com/cloudprober/cloudprober/config/runconfig"
-	"github.com/cloudprober/cloudprober/internal/servers"
-	"github.com/cloudprober/cloudprober/internal/sysvars"
-	"github.com/cloudprober/cloudprober/internal/tlsconfig"
-	"github.com/cloudprober/cloudprober/logger"
-	"github.com/cloudprober/cloudprober/prober"
-	"github.com/cloudprober/cloudprober/probes"
-	"github.com/cloudprober/cloudprober/surfacers"
-	"github.com/cloudprober/cloudprober/web"
+	"github.com/rishabhgargsde/cloudprober/common/tlsconfig"
+	"github.com/rishabhgargsde/cloudprober/config"
+	configpb "github.com/rishabhgargsde/cloudprober/config/proto"
+	"github.com/rishabhgargsde/cloudprober/config/runconfig"
+	"github.com/rishabhgargsde/cloudprober/logger"
+	"github.com/rishabhgargsde/cloudprober/prober"
+	"github.com/rishabhgargsde/cloudprober/probes"
+	"github.com/rishabhgargsde/cloudprober/servers"
+	"github.com/rishabhgargsde/cloudprober/surfacers"
+	"github.com/rishabhgargsde/cloudprober/sysvars"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/channelz/service"
 	"google.golang.org/grpc/credentials"
@@ -69,10 +68,11 @@ var cloudProber struct {
 	prober          *prober.Prober
 	defaultServerLn net.Listener
 	defaultGRPCLn   net.Listener
-	configSource    config.ConfigSource
+	rawConfig       string
+	parsedConfig    string
 	config          *configpb.ProberConfig
 	cancelInitCtx   context.CancelFunc
-	sync.RWMutex
+	sync.Mutex
 }
 
 func getServerHost(c *configpb.ProberConfig) string {
@@ -141,29 +141,7 @@ func setDebugHandlers(srvMux *http.ServeMux) {
 }
 
 // InitFromConfig initializes Cloudprober using the provided config.
-// Deprecated: This function is kept only for compatibility reasons. It's
-// recommended to use Init() or InitWithConfigSource() instead.
 func InitFromConfig(configFile string) error {
-	return InitWithConfigSource(config.ConfigSourceWithFile(configFile))
-}
-
-// Init initializes Cloudprober using the default config source.
-func Init() error {
-	return InitWithConfigSource(config.DefaultConfigSource())
-}
-
-func InitWithConfigSource(configSrc config.ConfigSource) error {
-	if err := initWithConfigSource(configSrc); err != nil {
-		return err
-	}
-	return web.InitWithDataFuncs(web.DataFuncs{
-		GetRawConfig:    GetRawConfig,
-		GetParsedConfig: GetParsedConfig,
-		GetInfo:         GetInfo,
-	})
-}
-
-func initWithConfigSource(configSrc config.ConfigSource) error {
 	// Return immediately if prober is already initialized.
 	cloudProber.Lock()
 	defer cloudProber.Unlock()
@@ -177,12 +155,17 @@ func initWithConfigSource(configSrc config.ConfigSource) error {
 		return err
 	}
 
-	cfg, err := configSrc.GetConfig()
+	globalLogger := logger.NewWithAttrs(slog.String("component", "global"))
+
+	configStr, configFormat, err := config.GetConfig(configFile, globalLogger)
 	if err != nil {
 		return err
 	}
 
-	globalLogger := logger.NewWithAttrs(slog.String("component", "global"))
+	cfg, parsedConfigStr, err := config.ParseConfig(configStr, configFormat, sysvars.Vars(), globalLogger)
+	if err != nil {
+		return err
+	}
 
 	// Start default HTTP server. It's used for profile handlers and
 	// prometheus exporter.
@@ -240,11 +223,11 @@ func initWithConfigSource(configSrc config.ConfigSource) error {
 
 	cloudProber.prober = pr
 	cloudProber.config = cfg
-	cloudProber.configSource = configSrc
+	cloudProber.rawConfig = configStr
+	cloudProber.parsedConfig = parsedConfigStr
 	cloudProber.defaultServerLn = ln
 	cloudProber.defaultGRPCLn = grpcLn
 	cloudProber.cancelInitCtx = cancelFunc
-
 	return nil
 }
 
@@ -270,8 +253,9 @@ func Start(ctx context.Context) {
 		defer cloudProber.Unlock()
 		cloudProber.defaultServerLn = nil
 		cloudProber.defaultGRPCLn = nil
+		cloudProber.rawConfig = ""
+		cloudProber.parsedConfig = ""
 		cloudProber.config = nil
-		cloudProber.configSource = nil
 		cloudProber.prober = nil
 	}()
 
@@ -292,34 +276,28 @@ func Start(ctx context.Context) {
 
 // GetConfig returns the prober config.
 func GetConfig() *configpb.ProberConfig {
-	cloudProber.RLock()
-	defer cloudProber.RUnlock()
+	cloudProber.Lock()
+	defer cloudProber.Unlock()
 	return cloudProber.config
 }
 
 // GetRawConfig returns the prober config in text proto format.
 func GetRawConfig() string {
-	cloudProber.RLock()
-	defer cloudProber.RUnlock()
-	return cloudProber.configSource.RawConfig()
+	cloudProber.Lock()
+	defer cloudProber.Unlock()
+	return cloudProber.rawConfig
 }
 
 // GetParsedConfig returns the parsed prober config.
 func GetParsedConfig() string {
-	cloudProber.RLock()
-	defer cloudProber.RUnlock()
-	return cloudProber.configSource.ParsedConfig()
+	cloudProber.Lock()
+	defer cloudProber.Unlock()
+	return cloudProber.parsedConfig
 }
 
 // GetInfo returns information on all the probes, servers and surfacers.
 func GetInfo() (map[string]*probes.ProbeInfo, []*surfacers.SurfacerInfo, []*servers.ServerInfo) {
-	cloudProber.RLock()
-	defer cloudProber.RUnlock()
+	cloudProber.Lock()
+	defer cloudProber.Unlock()
 	return cloudProber.prober.Probes, cloudProber.prober.Surfacers, cloudProber.prober.Servers
-}
-
-func GetProber() *prober.Prober {
-	cloudProber.RLock()
-	defer cloudProber.RUnlock()
-	return cloudProber.prober
 }

@@ -22,28 +22,26 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/cloudprober/cloudprober/metrics"
-	"github.com/cloudprober/cloudprober/probes/browser"
-	"github.com/cloudprober/cloudprober/probes/dns"
-	"github.com/cloudprober/cloudprober/probes/external"
-	grpcprobe "github.com/cloudprober/cloudprober/probes/grpc"
-	httpprobe "github.com/cloudprober/cloudprober/probes/http"
-	"github.com/cloudprober/cloudprober/probes/options"
-	"github.com/cloudprober/cloudprober/probes/ping"
-	configpb "github.com/cloudprober/cloudprober/probes/proto"
-	"github.com/cloudprober/cloudprober/probes/tcp"
-	"github.com/cloudprober/cloudprober/probes/udp"
-	"github.com/cloudprober/cloudprober/probes/udplistener"
-	"github.com/cloudprober/cloudprober/web/formatutils"
-	"google.golang.org/protobuf/proto"
-	"google.golang.org/protobuf/reflect/protoreflect"
+	"github.com/golang/protobuf/proto"
+	"github.com/rishabhgargsde/cloudprober/metrics"
+	"github.com/rishabhgargsde/cloudprober/probes/dns"
+	"github.com/rishabhgargsde/cloudprober/probes/external"
+	grpcprobe "github.com/rishabhgargsde/cloudprober/probes/grpc"
+	httpprobe "github.com/rishabhgargsde/cloudprober/probes/http"
+	"github.com/rishabhgargsde/cloudprober/probes/options"
+	"github.com/rishabhgargsde/cloudprober/probes/ping"
+	configpb "github.com/rishabhgargsde/cloudprober/probes/proto"
+	"github.com/rishabhgargsde/cloudprober/probes/tcp"
+	"github.com/rishabhgargsde/cloudprober/probes/udp"
+	"github.com/rishabhgargsde/cloudprober/probes/udplistener"
+	"github.com/rishabhgargsde/cloudprober/web/formatutils"
 )
 
 var (
 	userDefinedProbes   = make(map[string]Probe)
-	userDefinedProbesMu sync.RWMutex
+	userDefinedProbesMu sync.Mutex
 	extensionMap        = make(map[int]func() Probe)
-	extensionMapMu      sync.RWMutex
+	extensionMapMu      sync.Mutex
 )
 
 // Probe interface represents a probe.
@@ -77,25 +75,24 @@ type ProbeInfo struct {
 }
 
 func getExtensionProbe(p *configpb.ProbeDef) (Probe, interface{}, error) {
-	extensionMapMu.RLock()
-	defer extensionMapMu.RUnlock()
-
-	var newProbeFunc func() Probe
-	var value interface{}
-
-	proto.RangeExtensions(p, func(xt protoreflect.ExtensionType, val interface{}) bool {
-		newProbeFunc = extensionMap[int(xt.TypeDescriptor().Number())]
-		if newProbeFunc != nil {
-			value = val
-			return false
-		}
-		return true
-	})
-
-	if newProbeFunc == nil {
-		return nil, nil, fmt.Errorf("no extension probe found in the probe config")
+	extensions, err := proto.ExtensionDescs(p)
+	if err != nil {
+		return nil, nil, fmt.Errorf("error getting extensions from the probe config (%s): %v", p.String(), err)
 	}
-
+	if len(extensions) != 1 {
+		return nil, nil, fmt.Errorf("there should be exactly one extension in the probe config (%s), got %d extensions", p.String(), len(extensions))
+	}
+	desc := extensions[0]
+	value, err := proto.GetExtension(p, desc)
+	if err != nil {
+		return nil, nil, err
+	}
+	extensionMapMu.Lock()
+	defer extensionMapMu.Unlock()
+	newProbeFunc, ok := extensionMap[int(desc.Field)]
+	if !ok {
+		return nil, nil, fmt.Errorf("no probes registered for the extension: %d", desc.Field)
+	}
 	return newProbeFunc(), value, nil
 }
 
@@ -154,17 +151,14 @@ func initProbe(p *configpb.ProbeDef, opts *options.Options) (probe Probe, probeC
 	case configpb.ProbeDef_GRPC:
 		probe = &grpcprobe.Probe{}
 		probeConf = p.GetGrpcProbe()
-	case configpb.ProbeDef_BROWSER:
-		probe = &browser.Probe{}
-		probeConf = p.GetBrowserProbe()
 	case configpb.ProbeDef_EXTENSION:
 		probe, probeConf, err = getExtensionProbe(p)
 		if err != nil {
 			return
 		}
 	case configpb.ProbeDef_USER_DEFINED:
-		userDefinedProbesMu.RLock()
-		defer userDefinedProbesMu.RUnlock()
+		userDefinedProbesMu.Lock()
+		defer userDefinedProbesMu.Unlock()
 		probe = userDefinedProbes[p.GetName()]
 		if probe == nil {
 			err = fmt.Errorf("unregistered user defined probe: %s", p.GetName())
@@ -186,8 +180,8 @@ func initProbe(p *configpb.ProbeDef, opts *options.Options) (probe Probe, probeC
 // Example usage:
 //
 //	import (
-//		"github.com/cloudprober/cloudprober"
-//		"github.com/cloudprober/cloudprober/probes"
+//		"github.com/rishabhgargsde/cloudprober"
+//		"github.com/rishabhgargsde/cloudprober/probes"
 //	)
 //
 //	p := &FancyProbe{}

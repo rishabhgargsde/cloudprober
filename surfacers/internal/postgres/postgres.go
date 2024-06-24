@@ -31,16 +31,16 @@ package postgres
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"strconv"
 	"time"
 
-	"github.com/cloudprober/cloudprober/logger"
-	"github.com/cloudprober/cloudprober/metrics"
-	"github.com/cloudprober/cloudprober/surfacers/internal/common/options"
-	"github.com/jackc/pgx/v5"
+	"github.com/lib/pq"
+	"github.com/rishabhgargsde/cloudprober/logger"
+	"github.com/rishabhgargsde/cloudprober/metrics"
 
-	configpb "github.com/cloudprober/cloudprober/surfacers/internal/postgres/proto"
+	configpb "github.com/rishabhgargsde/cloudprober/surfacers/internal/postgres/proto"
 )
 
 // pgMetric represents a single metric and corresponds to a single row in the
@@ -121,7 +121,7 @@ func mapToPGMetrics[T int64 | float64](m *metrics.Map[T], em *metrics.EventMetri
 }
 
 // emToPGMetrics converts an EventMetrics struct into a list of pgMetrics.
-func (s *Surfacer) emToPGMetrics(em *metrics.EventMetrics) []pgMetric {
+func emToPGMetrics(em *metrics.EventMetrics) []pgMetric {
 	baseLabels := make(map[string]string)
 	for _, k := range em.LabelsKeys() {
 		baseLabels[k] = em.Label(k)
@@ -129,10 +129,6 @@ func (s *Surfacer) emToPGMetrics(em *metrics.EventMetrics) []pgMetric {
 
 	pgMerics := []pgMetric{}
 	for _, metricName := range em.MetricsKeys() {
-		if !s.opts.AllowMetric(metricName) {
-			continue
-		}
-
 		val := em.Metric(metricName)
 
 		// Map metric
@@ -165,75 +161,103 @@ func (s *Surfacer) emToPGMetrics(em *metrics.EventMetrics) []pgMetric {
 	return pgMerics
 }
 
-// writeMetrics parses events metrics into postgres rows, starts a transaction
-// and inserts all discreet metric rows represented by the EventMetrics
-func (s *Surfacer) dbRows(ems []*metrics.EventMetrics) ([][]any, error) {
-	var rows [][]any
+// Surfacer structures for writing to postgres.
+type Surfacer struct {
+	// Configuration
+	c       *configpb.SurfacerConf
+	columns []string
 
-	for _, em := range ems {
-		// Transaction for defined columns
-		if len(s.c.GetLabelToColumn()) > 0 {
-			for _, pgMetric := range s.emToPGMetrics(em) {
-				row := []any{pgMetric.time, pgMetric.metricName, pgMetric.value}
-				row = append(row, generateValues(pgMetric.labels, s.c.GetLabelToColumn())...)
-				rows = append(rows, row)
-			}
-		} else {
-			for _, pgMetric := range s.emToPGMetrics(em) {
-				s, err := labelsJSON(pgMetric.labels)
-				if err != nil {
-					return nil, err
-				}
-				rows = append(rows, []any{pgMetric.time, pgMetric.metricName, pgMetric.value, s})
-			}
-		}
+	// Channel for incoming data.
+	writeChan chan *metrics.EventMetrics
+
+	// Cloud logger
+	l *logger.Logger
+
+	openDB func(connectionString string) (*sql.DB, error)
+	db     *sql.DB
+}
+
+// New initializes a Postgres surfacer. Postgres surfacer inserts probe results
+// into a postgres database.
+func New(ctx context.Context, config *configpb.SurfacerConf, l *logger.Logger) (*Surfacer, error) {
+	s := &Surfacer{
+		c: config,
+		l: l,
+		openDB: func(cs string) (*sql.DB, error) {
+			return sql.Open("postgres", cs)
+		},
 	}
-
-	return rows, nil
+	return s, s.init(ctx)
 }
 
 // writeMetrics parses events metrics into postgres rows, starts a transaction
 // and inserts all discreet metric rows represented by the EventMetrics
-func (s *Surfacer) writeMetrics(ctx context.Context, ems []*metrics.EventMetrics) error {
-	rows, err := s.dbRows(ems)
+func (s *Surfacer) writeMetrics(em *metrics.EventMetrics) error {
+	// Begin a transaction.
+	txn, err := s.db.Begin()
 	if err != nil {
 		return err
 	}
 
-	_, err = s.dbconn.CopyFrom(ctx, pgx.Identifier{s.c.GetMetricsTableName()}, s.columns, pgx.CopyFromRows(rows))
-	return err
+	// Prepare a statement to COPY table from the STDIN.
+	stmt, err := txn.Prepare(pq.CopyIn(s.c.GetMetricsTableName(), s.columns...))
+	if err != nil {
+		return err
+	}
+
+	// Transaction for defined columns
+	if len(s.c.GetLabelToColumn()) > 0 {
+		for _, pgMetric := range emToPGMetrics(em) {
+			// args are the column values generated based on the chosen labels
+			args := []interface{}{pgMetric.time, pgMetric.metricName, pgMetric.value}
+			args = append(args, generateValues(pgMetric.labels, s.c.GetLabelToColumn())...)
+
+			if _, err = stmt.Exec(args...); err != nil {
+				return err
+			}
+		}
+	} else {
+		for _, pgMetric := range emToPGMetrics(em) {
+			var s string
+			if s, err = labelsJSON(pgMetric.labels); err != nil {
+				return err
+			}
+			if _, err = stmt.Exec(pgMetric.time, pgMetric.metricName, pgMetric.value, s); err != nil {
+				return err
+			}
+		}
+	}
+
+	if _, err = stmt.Exec(); err != nil {
+		return err
+	}
+	if err = stmt.Close(); err != nil {
+		return err
+	}
+
+	return txn.Commit()
 }
 
 // init connects to postgres
 func (s *Surfacer) init(ctx context.Context) error {
-	s.l.Info("Initializing postgres surfacer")
-
 	var err error
 
-	if s.dbconn, err = s.openDB(s.c.GetConnectionString()); err != nil {
+	if s.db, err = s.openDB(s.c.GetConnectionString()); err != nil {
 		return err
 	}
-	if err = s.dbconn.Ping(ctx); err != nil {
+	if err = s.db.Ping(); err != nil {
 		return err
 	}
 	s.writeChan = make(chan *metrics.EventMetrics, s.c.GetMetricsBufferSize())
 
 	// Generate the desired columns either with 'labels' by default
 	// or select 'labels' based on the label_to_column fields
-	s.columns = colName(s.c.GetLabelToColumn())
+	s.columns = generateColumns(s.c.GetLabelToColumn())
 
 	// Start a goroutine to run forever, polling on the writeChan. Allows
 	// for the surfacer to write asynchronously to the serial port.
 	go func() {
-		defer s.dbconn.Close(ctx)
-
-		metricsBatchSize, batchTimerSec := s.c.GetMetricsBatchSize(), s.c.GetBatchTimerSec()
-
-		buffer := make([]*metrics.EventMetrics, 0, metricsBatchSize)
-		flushInterval := time.Duration(batchTimerSec) * time.Second
-
-		flushTicker := time.NewTicker(flushInterval)
-		defer flushTicker.Stop()
+		defer s.db.Close()
 
 		for {
 			select {
@@ -244,20 +268,10 @@ func (s *Surfacer) init(ctx context.Context) error {
 				if em.Kind != metrics.CUMULATIVE && em.Kind != metrics.GAUGE {
 					continue
 				}
-				buffer = append(buffer, em)
-				if int32(len(buffer)) >= metricsBatchSize {
-					if err := s.writeMetrics(ctx, buffer); err != nil {
-						s.l.Warningf("Error while writing metrics: %v", err)
-					}
-					buffer = buffer[:0]
-					flushTicker.Reset(flushInterval)
-				}
-			case <-flushTicker.C:
-				if len(buffer) > 0 {
-					if err := s.writeMetrics(ctx, buffer); err != nil {
-						s.l.Warningf("Error while writing metrics: %v", err)
-					}
-					buffer = buffer[:0]
+				// Note: we may want to batch calls to writeMetrics, as each call results in
+				// a database transaction.
+				if err := s.writeMetrics(em); err != nil {
+					s.l.Warningf("Error while writing metrics: %v", err)
 				}
 			}
 		}
@@ -277,23 +291,23 @@ func (s *Surfacer) Write(ctx context.Context, em *metrics.EventMetrics) {
 
 // generateValues generates column values or places NULL
 // in the event label/value does not exist
-func generateValues(labels map[string]string, ltc []*configpb.LabelToColumn) []any {
-	var args []any
+func generateValues(labels map[string]string, ltc []*configpb.LabelToColumn) []interface{} {
+	var args []interface{}
 
 	for _, v := range ltc {
 		if val, ok := labels[v.GetLabel()]; ok {
 			args = append(args, val)
 		} else {
-			args = append(args, nil)
+			args = append(args, sql.NullByte{})
 		}
 	}
 
 	return args
 }
 
-// colName figures out postgres table column names, based on the
-// label_to_column configuration.
-func colName(ltc []*configpb.LabelToColumn) []string {
+// generateValues generates column values or places NULL
+// in the event label/value does not exist
+func generateColumns(ltc []*configpb.LabelToColumn) []string {
 	var columns []string
 	if len(ltc) > 0 {
 		columns = append([]string{"time", "metric_name", "value"}, make([]string, len(ltc))...)
@@ -304,35 +318,4 @@ func colName(ltc []*configpb.LabelToColumn) []string {
 		columns = []string{"time", "metric_name", "value", "labels"}
 	}
 	return columns
-}
-
-// Surfacer structures for writing to postgres.
-type Surfacer struct {
-	// Configuration
-	c       *configpb.SurfacerConf
-	opts    *options.Options
-	columns []string
-
-	// Channel for incoming data.
-	writeChan chan *metrics.EventMetrics
-
-	// Cloud logger
-	l *logger.Logger
-
-	openDB func(connectionString string) (*pgx.Conn, error)
-	dbconn *pgx.Conn
-}
-
-// New initializes a Postgres surfacer. Postgres surfacer inserts probe results
-// into a postgres database.
-func New(ctx context.Context, config *configpb.SurfacerConf, opts *options.Options, l *logger.Logger) (*Surfacer, error) {
-	s := &Surfacer{
-		c:    config,
-		opts: opts,
-		l:    l,
-		openDB: func(cs string) (*pgx.Conn, error) {
-			return pgx.Connect(ctx, cs)
-		},
-	}
-	return s, s.init(ctx)
 }

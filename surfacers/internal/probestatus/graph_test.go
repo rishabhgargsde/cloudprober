@@ -20,8 +20,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cloudprober/cloudprober/logger"
-	"github.com/stretchr/testify/assert"
+	"google3/third_party/golang/testify/assert/assert"
+
+	"github.com/rishabhgargsde/cloudprober/logger"
 )
 
 func testTimeSeries(inputInterval, res time.Duration, size int, errorIndex int) *timeseries {

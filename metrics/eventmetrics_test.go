@@ -16,11 +16,8 @@ package metrics
 
 import (
 	"fmt"
-	"strconv"
 	"testing"
 	"time"
-
-	"github.com/stretchr/testify/assert"
 )
 
 func newEventMetrics(sent, rcvd, rtt int64, respCodes map[string]int64) *EventMetrics {
@@ -66,6 +63,49 @@ func verifyEventMetrics(t *testing.T, m *EventMetrics, sent, rcvd, rtt int64, re
 		if m.Metric("resp-code").(*Map[int64]).GetKey(k) != eVal {
 			t.Errorf("Unexpected metric value. Expected: %d, Got: %d", eVal, m.Metric("resp-code").(*Map[int64]).GetKey(k))
 		}
+	}
+}
+
+func TestEventMetricsUpdate(t *testing.T) {
+	m := newEventMetrics(0, 0, 0, make(map[string]int64))
+	m.AddLabel("ptype", "http")
+
+	m2 := newEventMetrics(32, 22, 220100, map[string]int64{
+		"200": 22,
+	})
+	m.Update(m2)
+	// We'll verify later that mClone is un-impacted by further updates.
+	mClone := m.Clone()
+
+	// Verify that "m" has been updated correctly.
+	verifyEventMetrics(t, m, 32, 22, 220100, map[string]int64{
+		"200": 22,
+	})
+
+	m3 := newEventMetrics(30, 30, 300100, map[string]int64{
+		"200": 22,
+		"204": 8,
+	})
+	m.Update(m3)
+
+	// Verify that "m" has been updated correctly.
+	verifyEventMetrics(t, m, 62, 52, 520200, map[string]int64{
+		"200": 44,
+		"204": 8,
+	})
+
+	// Verify that even though "m" has changed, mClone is as m was after first update
+	verifyEventMetrics(t, mClone, 32, 22, 220100, map[string]int64{
+		"200": 22,
+	})
+
+	// Log metrics in string format
+	// t.Log(m.String())
+
+	expectedString := fmt.Sprintf("%d labels=ptype=http sent=62 rcvd=52 rtt=520200 resp-code=map:code,200:44,204:8", m.Timestamp.Unix())
+	s := m.String()
+	if s != expectedString {
+		t.Errorf("em.String()=%s, want=%s", s, expectedString)
 	}
 }
 
@@ -163,54 +203,4 @@ func TestAllocsPerRun(t *testing.T) {
 	})
 
 	t.Logf("Average allocations per run: ForNew=%v, ForString=%v", newAvg, stringAvg)
-}
-
-func TestLatencyUnitToString(t *testing.T) {
-	tests := map[time.Duration]string{
-		0:                "us",
-		time.Second:      "s",
-		time.Millisecond: "ms",
-		time.Microsecond: "us",
-		time.Nanosecond:  "ns",
-	}
-	for latencyUnit, want := range tests {
-		t.Run(want, func(t *testing.T) {
-			assert.Equal(t, want, LatencyUnitToString(latencyUnit), "LatencyUnitToString()")
-		})
-	}
-}
-
-func TestEventMetricsString(t *testing.T) {
-	em := newEventMetrics(20, 18, 1400, map[string]int64{"200": 18})
-	em.AddLabel("dst", "cloudprober.org")
-
-	tsString := strconv.FormatInt(em.Timestamp.Unix(), 10)
-
-	tests := []struct {
-		name string
-		opts []StringerOption
-		want string
-	}{
-		{
-			name: "default",
-			want: fmt.Sprintf("%s labels=dst=cloudprober.org sent=20 rcvd=18 rtt=1400 resp-code=map:code,200:18", tsString),
-		},
-		{
-			name: "no timstamp",
-			opts: []StringerOption{StringerNoTimestamp()},
-			want: "labels=dst=cloudprober.org sent=20 rcvd=18 rtt=1400 resp-code=map:code,200:18",
-		},
-		{
-			name: "ignore metric rcvd",
-			opts: []StringerOption{StringerIgnoreMetric(func(m string) bool {
-				return m == "rcvd"
-			})},
-			want: fmt.Sprintf("%s labels=dst=cloudprober.org sent=20 rtt=1400 resp-code=map:code,200:18", tsString),
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			assert.Equal(t, tt.want, em.String(tt.opts...))
-		})
-	}
 }

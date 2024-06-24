@@ -18,10 +18,8 @@ import (
 	"fmt"
 	"time"
 
-	_ "time/tzdata"
-
-	"github.com/cloudprober/cloudprober/logger"
-	configpb "github.com/cloudprober/cloudprober/probes/proto"
+	"github.com/rishabhgargsde/cloudprober/logger"
+	configpb "github.com/rishabhgargsde/cloudprober/probes/proto"
 )
 
 type period struct {
@@ -65,7 +63,7 @@ func (p *period) isInPeriod(t time.Time) bool {
 
 	p.l.Debugf("Schedule: checking if %s is in schedule: %s", nt.String(), p.String())
 
-	if nt == p.startTime || nt == p.endTime {
+	if nt.Equal(p.startTime) || nt.Equal(p.endTime) {
 		return true
 	}
 	return nt.After(p.startTime) && nt.Before(p.endTime)
@@ -74,13 +72,13 @@ func (p *period) isInPeriod(t time.Time) bool {
 func parsePeriod(sched *configpb.Schedule, l *logger.Logger) (*period, error) {
 	p := &period{l: l}
 
-	if sched.GetStartWeekday() == configpb.Schedule_EVERYDAY || sched.GetEndWeekday() == configpb.Schedule_EVERYDAY {
+	if sched.GetStartWeekday() == configpb.Schedule_DEFAULT_EVERYDAY || sched.GetEndWeekday() == configpb.Schedule_DEFAULT_EVERYDAY {
 		if sched.GetStartWeekday() != sched.GetEndWeekday() {
 			return nil, fmt.Errorf("invalid schedule: if start_weekday is set to EVERYDAY, end_weekday should also be set to EVERYDAY, and vice versa")
 		}
 	}
 
-	p.everyDay = sched.GetStartWeekday() == configpb.Schedule_EVERYDAY
+	p.everyDay = sched.GetStartWeekday() == configpb.Schedule_DEFAULT_EVERYDAY
 
 	loc, err := time.LoadLocation(sched.GetTimezone())
 	if err != nil {
@@ -120,6 +118,7 @@ func (p *period) String() string {
 	return fmt.Sprintf("%s - %s", p.startTime.Format("Mon 15:04 MST"), p.endTime.Format("Mon 15:04 MST"))
 }
 
+// Schedule represents probe running schedule
 type Schedule struct {
 	enablePeriods  []*period
 	disablePeriods []*period
@@ -158,14 +157,14 @@ func (s *Schedule) isIn(t time.Time) bool {
 
 func weekDayNum(wd configpb.Schedule_Weekday) int {
 	return map[configpb.Schedule_Weekday]int{
-		configpb.Schedule_EVERYDAY:  -1,
-		configpb.Schedule_SUNDAY:    0,
-		configpb.Schedule_MONDAY:    1,
-		configpb.Schedule_TUESDAY:   2,
-		configpb.Schedule_WEDNESDAY: 3,
-		configpb.Schedule_THURSDAY:  4,
-		configpb.Schedule_FRIDAY:    5,
-		configpb.Schedule_SATURDAY:  6,
+		configpb.Schedule_DEFAULT_EVERYDAY: -1,
+		configpb.Schedule_SUNDAY:           0,
+		configpb.Schedule_MONDAY:           1,
+		configpb.Schedule_TUESDAY:          2,
+		configpb.Schedule_WEDNESDAY:        3,
+		configpb.Schedule_THURSDAY:         4,
+		configpb.Schedule_FRIDAY:           5,
+		configpb.Schedule_SATURDAY:         6,
 	}[wd]
 }
 
@@ -178,6 +177,7 @@ func parseTime(t string) (int, int, error) {
 	return h, m, nil
 }
 
+// NewSchedule creates a new schedule.
 func NewSchedule(scheds []*configpb.Schedule, l *logger.Logger) (*Schedule, error) {
 	s := &Schedule{l: l}
 	for _, sched := range scheds {

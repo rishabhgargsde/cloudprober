@@ -24,12 +24,11 @@ import (
 	"testing"
 	"time"
 
-	"cloud.google.com/go/pubsub"
-	"github.com/cloudprober/cloudprober/logger"
-	"github.com/cloudprober/cloudprober/metrics"
-	"github.com/cloudprober/cloudprober/surfacers/internal/common/compress"
-	"github.com/cloudprober/cloudprober/surfacers/internal/common/options"
-	configpb "github.com/cloudprober/cloudprober/surfacers/internal/pubsub/proto"
+	"github.com/rishabhgargsde/cloudprober/logger"
+	"github.com/rishabhgargsde/cloudprober/metrics"
+	"github.com/rishabhgargsde/cloudprober/surfacers/internal/common/compress"
+	"github.com/rishabhgargsde/cloudprober/surfacers/internal/common/options"
+	configpb "github.com/rishabhgargsde/cloudprober/surfacers/internal/pubsub/proto"
 	"google.golang.org/api/option"
 	pb "google.golang.org/genproto/googleapis/pubsub/v1"
 	pb_grpc "google.golang.org/genproto/googleapis/pubsub/v1"
@@ -37,6 +36,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
+	"google3/third_party/golang/cloud_google_com/go/pubsub/v/v1/pubsub"
 )
 
 // testServer is the underlying service implementor. It is not intended to be used
@@ -129,8 +129,8 @@ func TestSurfacer(t *testing.T) {
 func createSurfacerAndVerify(t *testing.T, srv *testServer, compression bool) {
 	t.Helper()
 
-	//ctx, cancel := context.WithCancel(context.Background())
-	//defer cancel()
+	// ctx, cancel := context.WithCancel(context.Background())
+	// defer cancel()
 
 	s, err := New(context.Background(), &configpb.SurfacerConf{
 		Project:            proto.String("test-project"),

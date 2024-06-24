@@ -22,8 +22,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/cloudprober/cloudprober/probes/options"
-	"github.com/cloudprober/cloudprober/targets/endpoint"
+	"github.com/rishabhgargsde/cloudprober/probes/options"
+	"github.com/rishabhgargsde/cloudprober/targets/endpoint"
 )
 
 type dialState struct {

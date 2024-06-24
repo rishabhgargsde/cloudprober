@@ -3,13 +3,11 @@ syntax = "proto2";
 
 package cloudprober.targets;
 
-import "github.com/cloudprober/cloudprober/internal/rds/client/proto/config.proto";
-import "github.com/cloudprober/cloudprober/internal/rds/proto/rds.proto";
-import "github.com/cloudprober/cloudprober/targets/file/proto/config.proto";
-import "github.com/cloudprober/cloudprober/targets/gce/proto/config.proto";
-import "github.com/cloudprober/cloudprober/targets/lameduck/proto/config.proto";
-import "github.com/cloudprober/cloudprober/targets/endpoint/proto/endpoint.proto";
-
+import "github.com/rishabhgargsde/cloudprober/rds/client/proto/config.proto";
+import "github.com/rishabhgargsde/cloudprober/rds/proto/rds.proto";
+import "github.com/rishabhgargsde/cloudprober/targets/file/proto/config.proto";
+import "github.com/rishabhgargsde/cloudprober/targets/gce/proto/config.proto";
+import "github.com/rishabhgargsde/cloudprober/targets/lameduck/proto/config.proto";
 
 option go_package = "github.com/cloudprober/cloudprober/targets/proto";
 
@@ -78,32 +76,6 @@ message K8sTargets {
   optional rds.ClientConf.ServerOptions rds_server_options = 20;
 }
 
-message DNSOptions {
-  // DNS server to use for DNS resolution, instead of system's default. Server
-  // can be specified in the following format: [network://]ip[:port]
-  // where network is one of udp, tcp, tcp4, tcp6, udp4, udp6.
-  // Example:
-  //  - "1.1.1.1"           // Use default network and port (53)
-  // - "tcp://1.1.1.1"      // Use tcp network and default port (53)
-  // - "tcp://1.1.1.1:513   // Use tcp network and port 513
-  optional string server = 1;
-
-  // DNS TTL (time to live). This controls how often backend DNS server will be
-  // queried.
-  optional int32 ttl_sec = 2 [default = 300];
-
-  // This option controls for how long cached IP can be used in case of resolve
-  // errors. Default value for this is set to ttl_sec. It should never be
-  // lower than dns_ttl_sec.
-  optional int32 max_cache_age_sec = 3;
-
-  // Backend timeout in milliseconds. This option controls how long we'll wait
-  // for the backend DNS server to respond. Note that DNS resolution happens
-  // asynchronously, so DNS resolve time should never really affect the probe.
-  // This timeout affects how soon DNS resolution is retried, if it's hanging.
-  optional int32 backend_timeout_msec = 4 [default = 5000];
-}
-
 message TargetsDef {
   oneof type {
     // Static host names, for example:
@@ -168,24 +140,6 @@ message TargetsDef {
     DummyTargets dummy_targets = 20;
   }
 
-  // Static endpoints. These endpoints are merged with the resources returned
-  // by the targets type above.
-  // Example:
-  //   endpoint {
-  //     name: "service-gtwy-1"
-  //     ip: "10.1.18.121"
-  //     port: 8080
-  //     labels {
-  //       key: "service"
-  //       value: "products-service"
-  //     }
-  //   }
-  //   endpoint {
-  //     name: "frontend-url1"
-  //     url: "https://frontend.example.com/url1"
-  //   }
-  repeated Endpoint endpoint = 23;
-
   // Regex to apply on the targets.
   optional string regex = 21;
 
@@ -193,15 +147,6 @@ message TargetsDef {
   // configurator) service. This functionality works only if lame_duck_options
   // are specified.
   optional bool exclude_lameducks = 22 [default = true];
-
-  // Options to control DNS resolution behavior if using Cloudprober's DNS
-  // resolver, which get triggered only if you're setting `resolve_first` probe
-  // setting to true.
-  optional DNSOptions dns_options = 30;
-  
-  // Provide a dns resolver override instead of using the default dns resolver.
-  // Deprecated: This option is now deprecated, please use dns_options instead.
-  optional string dns_server = 31;
 
   // Extensions allow users to to add new targets types (for example, a targets
   // type that utilizes a custom protocol) in a systematic manner.

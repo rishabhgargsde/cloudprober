@@ -17,7 +17,7 @@ package probestatus
 import (
 	"time"
 
-	"github.com/cloudprober/cloudprober/logger"
+	"github.com/rishabhgargsde/cloudprober/logger"
 )
 
 type timeseries struct {

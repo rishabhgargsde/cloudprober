@@ -19,10 +19,10 @@ import (
 	"testing"
 	"time"
 
-	"cloud.google.com/go/bigquery"
-	"github.com/cloudprober/cloudprober/logger"
-	"github.com/cloudprober/cloudprober/metrics"
-	configpb "github.com/cloudprober/cloudprober/surfacers/internal/bigquery/proto"
+	"github.com/rishabhgargsde/cloudprober/logger"
+	"github.com/rishabhgargsde/cloudprober/metrics"
+	configpb "github.com/rishabhgargsde/cloudprober/surfacers/internal/bigquery/proto"
+	"google3/third_party/golang/cloud_google_com/go/bigquery/v/v1/bigquery"
 )
 
 const (

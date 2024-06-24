@@ -2,23 +2,22 @@ syntax = "proto2";
 
 package cloudprober.probes;
 
-import "github.com/cloudprober/cloudprober/metrics/proto/dist.proto";
-import "github.com/cloudprober/cloudprober/internal/alerting/proto/config.proto";
-import "github.com/cloudprober/cloudprober/probes/browser/proto/config.proto";
-import "github.com/cloudprober/cloudprober/probes/dns/proto/config.proto";
-import "github.com/cloudprober/cloudprober/probes/external/proto/config.proto";
-import "github.com/cloudprober/cloudprober/probes/grpc/proto/config.proto";
-import "github.com/cloudprober/cloudprober/probes/http/proto/config.proto";
-import "github.com/cloudprober/cloudprober/probes/ping/proto/config.proto";
-import "github.com/cloudprober/cloudprober/probes/tcp/proto/config.proto";
-import "github.com/cloudprober/cloudprober/probes/udp/proto/config.proto";
-import "github.com/cloudprober/cloudprober/probes/udplistener/proto/config.proto";
-import "github.com/cloudprober/cloudprober/targets/proto/targets.proto";
-import "github.com/cloudprober/cloudprober/internal/validators/proto/config.proto";
+import "github.com/rishabhgargsde/cloudprober/metrics/proto/dist.proto";
+import "github.com/rishabhgargsde/cloudprober/probes/alerting/proto/config.proto";
+import "github.com/rishabhgargsde/cloudprober/probes/dns/proto/config.proto";
+import "github.com/rishabhgargsde/cloudprober/probes/external/proto/config.proto";
+import "github.com/rishabhgargsde/cloudprober/probes/grpc/proto/config.proto";
+import "github.com/rishabhgargsde/cloudprober/probes/http/proto/config.proto";
+import "github.com/rishabhgargsde/cloudprober/probes/ping/proto/config.proto";
+import "github.com/rishabhgargsde/cloudprober/probes/tcp/proto/config.proto";
+import "github.com/rishabhgargsde/cloudprober/probes/udp/proto/config.proto";
+import "github.com/rishabhgargsde/cloudprober/probes/udplistener/proto/config.proto";
+import "github.com/rishabhgargsde/cloudprober/targets/proto/targets.proto";
+import "github.com/rishabhgargsde/cloudprober/validators/proto/config.proto";
 
 option go_package = "github.com/cloudprober/cloudprober/probes/proto";
 
-// Next tag: 101
+// Next tag: 102
 message ProbeDef {
   // Probe name. It should be unique across all probes.
   required string name = 1;
@@ -32,7 +31,6 @@ message ProbeDef {
     UDP_LISTENER = 5;
     GRPC = 6;
     TCP = 7;
-    BROWSER = 8;
 
     // One of the extension probe types. See "extensions" below for more
     // details.
@@ -47,12 +45,12 @@ message ProbeDef {
   required Type type = 2;
 
   // Interval between two probe runs in milliseconds.
-  // Only one of "interval" and "inteval_msec" should be defined.
+  // Only one of "interval" and "interval_msec" should be defined.
   // Default interval is 2s.
   optional int32 interval_msec = 4;
 
   // Interval between two probe runs in string format, e.g. 10s.
-  // Only one of "interval" and "inteval_msec" should be defined.
+  // Only one of "interval" and "interval_msec" should be defined.
   // Default interval is 2s.
   optional string interval = 16;
 
@@ -66,9 +64,8 @@ message ProbeDef {
   // Default timeout is 1s.
   optional string timeout = 17;
 
-  // Targets for the probe. Targets are required for all probes except
-  // for external, user_defined, and extension probe types.
-  optional targets.TargetsDef targets = 6;
+  // Targets for the probe
+  required targets.TargetsDef targets = 6;
 
   // Latency distribution. If specified, latency is stored as a distribution.
   optional metrics.Dist latency_distribution = 7;
@@ -179,7 +176,6 @@ message ProbeDef {
     udplistener.ProbeConf udp_listener_probe = 25;
     grpc.ProbeConf grpc_probe = 26;
     tcp.ProbeConf tcp_probe = 27;
-    browser.ProbeConf browser_probe = 28;
     // This field's contents are passed on to the user defined probe,
     // registered for this probe's name through probes.RegisterUserDefined().
     string user_defined_probe = 99;
@@ -195,7 +191,7 @@ message ProbeDef {
   // should or should not run. This is useful for running probes only during
   // business hours.
   //
-  // You can specify multiple schedules. Probe will not run if any of the 
+  // You can specify multiple schedules. Probe will not run if any of the
   // "DISABLE" schedules are active. If both "ENABLE" and "DISABLE" schedules
   // overlap, "DISABLE" takes precedence.
   //
@@ -206,7 +202,7 @@ message ProbeDef {
   //     start_weekday: FRIDAY
   //     start_time: "20:00"
   //     end_weekday: SUNDAY
-  //     end_time: "17:00" 
+  //     end_time: "17:00"
   //     timezone: "America/New_York"
   //   }
   //   schdule {
@@ -214,7 +210,7 @@ message ProbeDef {
   //     start_weekday: TUESDAY
   //     start_time: "19:00"
   //     end_weekday: TUESDAY
-  //     end_time: "20:00" 
+  //     end_time: "20:00"
   //     timezone: "America/New_York"
   //   }
   repeated Schedule schedule = 101;
@@ -238,7 +234,7 @@ message AdditionalLabel {
 
 message Schedule {
   enum Weekday {
-    EVERYDAY = 0;
+    DEFAULT_EVERYDAY = 0;
     SUNDAY = 1;
     MONDAY = 2;
     TUESDAY = 3;
@@ -249,21 +245,21 @@ message Schedule {
   }
 
   enum ScheduleType {
-    ScheduleType_UNSPECIFIED = 0;
+    SCHEDULE_TYPE_UNSPECIFIED = 0;
     ENABLE = 1;
     DISABLE = 2;
   }
 
-  required ScheduleType type = 1;
+  optional ScheduleType type = 1;
 
   // Period start weekday. If not specified, it defaults to EVERYDAY.
-  optional Weekday start_weekday = 2 [default = EVERYDAY];
+  optional Weekday start_weekday = 2 [default = DEFAULT_EVERYDAY];
 
   // Start time in 24 hour HH:MM format.
   optional string start_time = 3 [default = "00:00"];
 
   // Period end weekday. If not specified, it defaults to EVERYDAY.
-  optional Weekday end_weekday = 4 [default = EVERYDAY];
+  optional Weekday end_weekday = 4 [default = DEFAULT_EVERYDAY];
 
   // End time in 24 hour HH:MM format.
   optional string end_time = 5 [default = "23:59"];

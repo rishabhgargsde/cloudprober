@@ -5,10 +5,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cloudprober/cloudprober/metrics"
-	configpb "github.com/cloudprober/cloudprober/surfacers/internal/postgres/proto"
-	"github.com/stretchr/testify/assert"
-	"google.golang.org/protobuf/proto"
+	"github.com/rishabhgargsde/cloudprober/metrics"
+
+	configpb "github.com/rishabhgargsde/cloudprober/surfacers/internal/postgres/proto"
 )
 
 func TestEMToPGMetricsNoDistribution(t *testing.T) {
@@ -22,8 +21,7 @@ func TestEMToPGMetricsNoDistribution(t *testing.T) {
 		AddMetric("resp_code", respCodesVal).
 		AddLabel("ptype", "http")
 
-	s := &Surfacer{}
-	rows := s.emToPGMetrics(em)
+	rows := emToPGMetrics(em)
 
 	if len(rows) != 4 {
 		t.Errorf("Expected %d rows, received: %d\n", 4, len(rows))
@@ -57,8 +55,7 @@ func TestEMToPGMetricsWithDistribution(t *testing.T) {
 		AddMetric("latency", latencyVal).
 		AddLabel("ptype", "http")
 
-	s := &Surfacer{}
-	rows := s.emToPGMetrics(em)
+	rows := emToPGMetrics(em)
 
 	if len(rows) != 5 {
 		t.Errorf("Expected %d rows, received: %d\n", 5, len(rows))
@@ -142,7 +139,7 @@ func TestGenerateValues(t *testing.T) {
 	}
 }
 
-func TestColColumns(t *testing.T) {
+func TestGenerateColumns(t *testing.T) {
 	label1 := "dst"
 	label2 := "code"
 	column1 := "dst"
@@ -180,64 +177,9 @@ func TestColColumns(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := colName(tt.args.ltc); !reflect.DeepEqual(got, tt.want) {
-				t.Errorf("colNames() = %v, want %v", got, tt.want)
+			if got := generateColumns(tt.args.ltc); !reflect.DeepEqual(got, tt.want) {
+				t.Errorf("generateColumns() = %v, want %v", got, tt.want)
 			}
-		})
-	}
-}
-
-func TestDBRows(t *testing.T) {
-	ts := time.Now()
-	ems := []*metrics.EventMetrics{
-		metrics.NewEventMetrics(ts).AddMetric("sent", metrics.NewInt(32)).AddMetric("rcvd", metrics.NewInt(22)).AddLabel("dst", "dst1"),
-		metrics.NewEventMetrics(ts).AddMetric("sent", metrics.NewInt(33)).AddMetric("rcvd", metrics.NewInt(32)).AddLabel("dst", "dst2"),
-	}
-	tests := []struct {
-		name          string
-		columns       []string
-		labelToColumn []*configpb.LabelToColumn
-		want          [][]any
-		wantErr       bool
-	}{
-		{
-			name:    "test-1",
-			columns: []string{"time", "metric_name", "value", "dst"},
-			labelToColumn: []*configpb.LabelToColumn{{
-				Label:  proto.String("dst"),
-				Column: proto.String("dst"),
-			}},
-			want: [][]any{
-				{ts, "sent", "32", "dst1"},
-				{ts, "rcvd", "22", "dst1"},
-				{ts, "sent", "33", "dst2"},
-				{ts, "rcvd", "32", "dst2"},
-			},
-		},
-		{
-			name:          "test-2",
-			columns:       []string{"time", "metric_name", "value", "labels"},
-			labelToColumn: nil,
-			want: [][]any{
-				{ts, "sent", "32", "{\"dst\":\"dst1\"}"},
-				{ts, "rcvd", "22", "{\"dst\":\"dst1\"}"},
-				{ts, "sent", "33", "{\"dst\":\"dst2\"}"},
-				{ts, "rcvd", "32", "{\"dst\":\"dst2\"}"},
-			},
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			s := &Surfacer{
-				columns: tt.columns,
-				c:       &configpb.SurfacerConf{LabelToColumn: tt.labelToColumn},
-			}
-			got, err := s.dbRows(ems)
-			if (err != nil) != tt.wantErr {
-				t.Errorf("Surfacer.dbRows() error = %v, wantErr %v", err, tt.wantErr)
-				return
-			}
-			assert.Equal(t, tt.want, got, "dbRows() = %v, want %v", got, tt.want)
 		})
 	}
 }
